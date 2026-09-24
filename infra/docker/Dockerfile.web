@@ -1,0 +1,16 @@
+# ============================================================================
+# Dockerfile for Next.js frontend
+# ============================================================================
+
+FROM node:20-alpine AS base
+
+WORKDIR /app
+
+COPY apps/web/package.json apps/web/yarn.lock ./
+RUN yarn install --frozen-lockfile
+
+COPY apps/web/ ./
+
+RUN yarn build
+
+CMD ["yarn", "start"]

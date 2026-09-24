@@ -1,0 +1,25 @@
+# ============================================================================
+# Dockerfile for Celery Worker (shared base with API)
+# ============================================================================
+
+FROM python:3.12-slim AS base
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+COPY pyproject.toml uv.lock ./
+COPY services/ ./services/
+COPY alembic/ ./alembic/
+COPY packages/ ./packages/
+
+RUN uv sync --frozen --no-dev
+
+ENV PYTHONPATH="/app/services/api/src:/app/services/worker/src"
+
+CMD ["uv", "run", "celery", "-A", "worker.celery_app", "worker", "--loglevel=info"]
