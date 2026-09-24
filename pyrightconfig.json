@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/pyright-pyright/main/pyright/src/main/resources/pyrightconfig.schema.json",
+  "include": ["services/api/src", "services/worker/src", "tests"],
+  "exclude": ["**/node_modules", "**/__pycache__", ".venv", "packages/contracts/generated"],
+  "typeCheckingMode": "strict",
+  "reportMissingTypeStubs": "warning",
+  "reportUnknownMemberType": "warning",
+  "reportUnknownArgumentType": "warning",
+  "reportUnknownVariableType": "warning",
+  "reportUnknownParameterType": "warning",
+  "reportMissingTypeArgument": "warning",
+  "strictListInference": true,
+  "strictDictionaryInference": true,
+  "strictSetInference": true,
+  "strictParameterNoneValue": true,
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Linux",
+  "venvPath": ".",
+  "venv": ".venv",
+  "executionEnvironments": [
+    { "root": "services/api", "pythonVersion": "3.12" },
+    { "root": "services/worker", "pythonVersion": "3.12" }
+  ]
+}

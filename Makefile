@@ -1,0 +1,86 @@
+.PHONY: install dev lint typecheck test test-integration test-security \
+       format migrate seed reset openapi frontend-install frontend-dev \
+       frontend-build frontend-lint frontend-test e2e docker-up docker-down \
+       clean
+
+# ── Python ──────────────────────────────────────────────────────────
+install:
+	uv sync
+
+dev:
+	uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+lint:
+	uv run ruff check .
+
+format:
+	uv run ruff format .
+	uv run ruff check --fix .
+
+format-check:
+	uv run ruff format --check .
+
+typecheck:
+	uv run pyright
+
+test:
+	uv run pytest
+
+test-integration:
+	uv run pytest tests/integration -v
+
+test-security:
+	uv run pytest tests/security -v
+
+# ── Database ────────────────────────────────────────────────────────
+migrate:
+	uv run alembic upgrade head
+
+migrate-new:
+	uv run alembic revision --autogenerate -m "$(MSG)"
+
+seed:
+	uv run python scripts/seed_fixtures.py
+
+reset:
+	uv run python scripts/reset_demo.py
+
+# ── OpenAPI / Frontend contracts ────────────────────────────────────
+openapi:
+	uv run python scripts/generate_openapi.py
+	cd apps/web && yarn generate-types
+
+# ── Frontend ───────────────────────────────────────────────────────
+frontend-install:
+	cd apps/web && yarn install
+
+frontend-dev:
+	cd apps/web && yarn dev
+
+frontend-build:
+	cd apps/web && yarn build
+
+frontend-lint:
+	cd apps/web && yarn lint
+
+frontend-test:
+	cd apps/web && yarn test
+
+e2e:
+	cd apps/web && yarn e2e
+
+# ── Docker ──────────────────────────────────────────────────────────
+docker-up:
+	docker compose up -d
+
+docker-down:
+	docker compose down
+
+# ── CI (run everything) ─────────────────────────────────────────────
+ci: format-check lint typecheck test test-security
+	@echo "CI checks passed."
+
+clean:
+	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
+	rm -rf services/api/.mypy_cache services/worker/.mypy_cache

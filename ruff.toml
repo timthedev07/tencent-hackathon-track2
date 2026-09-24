@@ -1,0 +1,66 @@
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "S",    # flake8-bandit (security)
+    "T20",  # flake8-print
+    "SIM",  # flake8-simplify
+    "PL",   # pylint
+    "RUF",  # ruff-specific
+    "ASYNC",# flake8-async
+    "A",    # flake8-builtins
+    "ANN",  # flake8-annotations
+    "BLE",  # flake8-blind-except
+    "FBT",  # flake8-boolean-trap
+    "DTZ",  # flake8-datetimez
+    "PT",   # flake8-pytest-style
+    "RET",  # flake8-return
+    "SLF",  # flake8-self
+    "TRY",  # tryceratops
+]
+ignore = [
+    "ANN401",  # dynamically-typed
+    "PLR0913", # too-many-arguments
+    "S101",    # assert usage (needed in tests)
+    "S104",    # hardcoded-bind-all-interfaces
+    "S105",    # hardcoded-password-string (false positives in config)
+    "S106",    # hardcoded-password-func-arg
+    "S108",    # suspicious-tmp-usage
+    "B008",    # function call in default argument (FastAPI Depends pattern)
+    "PLW0603", # global statement (used for module-level singletons)
+    "TRY003",  # long messages in exception classes
+    "BLE001",  # blind except (intentional defensive catches in security-critical code)
+    "S110",    # try-except-pass (used where logging is undesirable)
+    "PLR0917", # too many positional arguments
+    "PLR0912", # too many branches
+    "PLR0915", # too many statements
+]
+
+[lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S106", "ANN", "PLR2004", "SLF001", "PLC0415", "FBT", "PLW0603"]
+"alembic/versions/**/*.py" = ["ANN", "E501"]
+"alembic/env.py" = ["PLC0415", "E402"]
+"scripts/**/*.py" = ["PLC0415", "ANN", "E501", "S110"]
+"services/api/src/app/api/routes/**/*.py" = ["N815", "PLC0415", "B008"]
+"services/api/src/app/api/dependencies/**/*.py" = ["PLC0415"]
+"services/api/src/app/connectors/**/*.py" = ["PLC0415"]
+"services/api/src/app/domain/**/*.py" = ["PLC0415"]
+"services/api/src/app/authorisation/**/*.py" = ["PLC0415"]
+"services/api/src/app/auth/**/*.py" = ["PLC0415"]
+"services/api/src/app/retrieval/**/*.py" = ["PLC0415"]
+"services/api/src/app/models/**/*.py" = ["PLC0415"]
+"services/api/src/app/audit/**/*.py" = ["PLC0415"]
+"services/api/src/app/observability/**/*.py" = ["PLC0415"]
+"services/worker/src/worker/tasks/**/*.py" = ["PLC0415"]
+
+[format]
+docstring-code-format = true

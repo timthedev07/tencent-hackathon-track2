@@ -1,0 +1,10 @@
+root = true
+
+[*.py]
+indent_size = 4
+
+[*.{ts,tsx,js,jsx,json,yml,yaml,md,css,scss}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab
