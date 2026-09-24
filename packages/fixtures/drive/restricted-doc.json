@@ -1,0 +1,10 @@
+{
+  "source": "google_drive",
+  "object_id": "0x9y8z7w6v5u4t3s2r1",
+  "title": "Confidential Financial Projections",
+  "content": "# Financial Projections Q4\n\n## Revenue Forecast\nProjected revenue increase of 35% for Q4 based on enterprise segment growth.\n\n## Budget Allocation\n60% engineering, 25% sales, 15% operations.",
+  "revision": "2026-09-21T12:00:00Z",
+  "mime_type": "application/vnd.google-apps.document",
+  "permissions": { "readers": ["cfo@company.com", "ceo@company.com"] },
+  "canonical_url": "https://drive.google.com/file/d/0x9y8z7w6v5u4t3s2r1"
+}

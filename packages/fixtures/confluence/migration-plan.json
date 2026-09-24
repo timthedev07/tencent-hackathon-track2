@@ -1,0 +1,10 @@
+{
+  "source": "confluence",
+  "object_id": "confluence-migration-plan-003",
+  "space_key": "ENG",
+  "title": "Q4 Migration Plan",
+  "content": "# Q4 Migration Plan\n\n## Overview\nThis document outlines the Q4 platform migration from monolith to microservices-ready architecture.\n\n## Timeline\n- Week 1: Database migration to PostgreSQL with pgvector\n- Week 2: API service migration to FastAPI\n- Week 3: Frontend migration to Next.js\n- Week 4: Integration testing and cutover\n\n## Key Decisions\nThe team decided to use a strangler-fig pattern for the migration. We will maintain the old API during transition.\n\n## Risks\n- Data consistency during dual-write period\n- Provider rate limits during initial sync\n- Embedding model dimension mismatch\n\n## Rollback\nIf migration fails, revert to the previous architecture using the migration rollback script.",
+  "revision": "2026-09-20T09:00:00Z",
+  "restrictions": { "read": { "groups": ["eng-team"], "users": [] } },
+  "canonical_url": "https://company.atlassian.net/wiki/spaces/ENG/pages/003"
+}

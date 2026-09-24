@@ -1,0 +1,12 @@
+{
+  "source": "slack",
+  "object_id": "G9876543210-P9876543210-001",
+  "channel_id": "G9876543210",
+  "channel_name": "exec-confidential",
+  "thread_ts": "9876543210.001",
+  "author": "ceo",
+  "text": "Board meeting notes: The acquisition is proceeding. Budget approved for Q4.",
+  "revision": "2026-09-22T18:00:00Z",
+  "channel_visibility": "private",
+  "canonical_url": "https://company.slack.com/archives/G9876543210/p9876543210001001"
+}

@@ -1,0 +1,20 @@
+{
+  "source": "jira",
+  "object_id": "PROJ-124",
+  "project_key": "PROJ",
+  "title": "Implement vector search with pgvector",
+  "summary": "Implement HNSW vector search using pgvector for the retrieval pipeline.",
+  "description": "We need to set up pgvector with HNSW indexes for approximate nearest neighbour search. The implementation must support filtered scans with exact-scan fallback for underfilled results.",
+  "comments": [
+    { "author": "alice", "body": "I'll start with the HNSW index configuration.", "created": "2026-09-22T11:00:00Z" },
+    { "author": "bob", "body": "Make sure to test the filtered underfill scenario.", "created": "2026-09-22T11:30:00Z" }
+  ],
+  "structured_fields": {
+    "priority": "High",
+    "status": "In Progress",
+    "assignee": "alice"
+  },
+  "revision": "2026-09-22T11:00:00Z",
+  "visibility": { "type": "group", "value": "eng-team" },
+  "canonical_url": "https://company.atlassian.net/jira/PROJ-124"
+}

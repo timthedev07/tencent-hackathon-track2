@@ -1,0 +1,12 @@
+{
+  "source": "jira",
+  "object_id": "SEC-456",
+  "project_key": "SEC",
+  "title": "Security vulnerability: SQL injection in legacy endpoint",
+  "summary": "Critical SQL injection vulnerability found in the legacy reporting endpoint.",
+  "description": "The /reports/legacy endpoint constructs SQL using string concatenation. This must be fixed immediately by switching to parameterised queries.",
+  "comments": [],
+  "revision": "2026-09-21T16:00:00Z",
+  "visibility": { "type": "group", "value": "security-team" },
+  "canonical_url": "https://company.atlassian.net/jira/SEC-456"
+}

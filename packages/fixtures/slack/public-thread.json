@@ -1,0 +1,12 @@
+{
+  "source": "slack",
+  "object_id": "C1234567890-P1234567890-001",
+  "channel_id": "C1234567890",
+  "channel_name": "eng-deployment",
+  "thread_ts": "1234567890.001",
+  "author": "alice",
+  "text": "The deployment went smoothly today. All smoke tests passed.",
+  "revision": "2026-09-23T10:30:00Z",
+  "channel_visibility": "public",
+  "canonical_url": "https://company.slack.com/archives/C1234567890/p1234567890001001"
+}
