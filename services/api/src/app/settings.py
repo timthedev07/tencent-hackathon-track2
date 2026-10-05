@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     SLACK_CLIENT_ID: str = ""
     SLACK_CLIENT_SECRET: str = ""
     SLACK_SIGNING_SECRET: str = ""
+    SLACK_REDIRECT_URI: str = ""
 
     # ── Google Drive ───────────────────────────────────────────────
     GOOGLE_CLIENT_ID: str = ""

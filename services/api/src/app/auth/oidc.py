@@ -68,8 +68,25 @@ async def validate_token(token: str) -> dict[str, Any]:
     Validates: signature, issuer, audience, expiry, subject.
     Returns the decoded claims.
     Raises on invalid token (caller maps to 401).
+
+    Dev mode: tokens prefixed with 'dev-' bypass all cryptographic checks.
+    The subject is extracted directly from the token for local development.
     """
     settings = get_settings()
+
+    # ── Dev-mode bypass ──────────────────────────────────────────
+    # In development, accept 'dev-{subject}' tokens without signature
+    # verification, JWKS fetch, or issuer/audience checks.
+    if settings.is_development and token.startswith("dev-"):
+        oidc_subject = token.removeprefix("dev-")
+        if not oidc_subject:
+            raise ValueError("AUTH_INVALID_TOKEN")
+        logger.info("Dev-mode token accepted", oidc_subject=oidc_subject)
+        return {
+            "sub": oidc_subject,
+            "iss": "dev-local",
+            "aud": "dev-local",
+        }
 
     # Decode without verification first to get the key ID
     try:
@@ -106,7 +123,7 @@ async def validate_token(token: str) -> dict[str, Any]:
         signing_key = None
         for key in jwks["keys"]:
             if key.get("kid") == kid:
-                signing_key = jwt.algorithms.RSAAlgorithm.from_jwk(key)
+                signing_key = jwt.PyJWK(key)
                 break
         if signing_key is None:
             logger.warning("No matching JWKS key for kid")
@@ -148,6 +165,43 @@ async def resolve_user(session: AsyncSession, claims: dict[str, Any]) -> Authent
     )
     result = await session.execute(stmt)
     row = result.first()
+
+    # ── Dev-mode auto-provision ─────────────────────────────────
+    # In development, if the user doesn't exist, auto-create a dev
+    # tenant + user so the app works without Keycloak.
+    if row is None and get_settings().is_development:
+        # Check if a dev tenant already exists
+        dev_tenant = await session.execute(
+            select(Tenant).where(Tenant.external_org_key == "dev-org")
+        )
+        tenant = dev_tenant.scalar_one_or_none()
+        if tenant is None:
+            tenant = Tenant(
+                external_org_key="dev-org",
+                display_name="Development Tenant",
+            )
+            session.add(tenant)
+            await session.flush()
+
+        user = User(
+            tenant_id=tenant.id,
+            oidc_subject=oidc_subject,
+            display_name=f"Dev User ({oidc_subject})",
+            email=f"{oidc_subject}@dev.local",
+            is_compliance_user=True,
+        )
+        session.add(user)
+        await session.commit()
+        logger.info("Auto-provisioned dev user", oidc_subject=oidc_subject)
+
+        return AuthenticatedUser(
+            user_id=user.id,
+            tenant_id=tenant.id,
+            oidc_subject=oidc_subject,
+            display_name=user.display_name,
+            email=user.email,
+            is_compliance_user=user.is_compliance_user,
+        )
 
     if row is None:
         logger.warning("No user found for OIDC subject")

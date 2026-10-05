@@ -151,7 +151,5 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 metrics_middleware = MetricsMiddleware
 
 
-def metrics_endpoint(scope: Any, receive: Any, send: Any) -> None:
-    """ASGI endpoint for /metrics."""
-    app = make_asgi_app()
-    return app(scope, receive, send)
+# Prometheus ASGI app, mounted at /metrics in main.py
+metrics_app = make_asgi_app()

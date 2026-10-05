@@ -55,9 +55,19 @@ class CredentialManager:
         """Get the Fernet cipher (dev mode)."""
         if self._fernet is None:
             key = self._settings.ENCRYPTION_MASTER_KEY
-            # Pad/derive a valid 32-byte URL-safe base64 key
-            key_bytes = key.encode("utf-8")[:44].ljust(44, b"=")
-            fernet_key = base64.urlsafe_b64encode(base64.urlsafe_b64decode(key_bytes))
+            # If the key is a valid URL-safe base64 string (44 chars), use it
+            # directly. Otherwise, derive a 32-byte key from the raw bytes
+            # using SHA-256, then encode as URL-safe base64.
+            try:
+                key_bytes = base64.urlsafe_b64decode(key)
+                if len(key_bytes) != 32:
+                    raise ValueError
+                fernet_key = key.encode("utf-8")
+            except (ValueError, base64.binascii.Error):
+                import hashlib
+
+                derived = hashlib.sha256(key.encode("utf-8")).digest()
+                fernet_key = base64.urlsafe_b64encode(derived)
             self._fernet = Fernet(fernet_key)
         return self._fernet
 
