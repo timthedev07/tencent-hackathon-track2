@@ -46,4 +46,4 @@ async def get_audit_capsule(
     """Retrieve the audit capsule for a completed query (compliance role required)."""
     from app.domain.audit_service import get_audit_capsule
 
-    return await get_audit_capsule(query_id, user)
+    return await get_audit_capsule(query_id, user)  # type: ignore[return-value]

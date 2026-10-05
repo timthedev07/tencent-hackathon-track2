@@ -57,11 +57,11 @@ async def set_tenant_context(session: AsyncSession, tenant_id: UUID | str) -> No
     """Set the RLS tenant context for the current transaction.
 
     This must be called at the beginning of every tenant-scoped transaction.
+    The tenant_id is server-derived (never from client input), so safe to inline.
+    PostgreSQL's SET LOCAL does not support bind parameters.
     """
-    await session.execute(
-        text("SET LOCAL app.tenant_id = :tid"),
-        {"tid": str(tenant_id)},
-    )
+    tid = str(tenant_id).replace("'", "''")
+    await session.execute(text(f"SET LOCAL app.tenant_id = '{tid}'"))
 
 
 async def dispose_engine() -> None:

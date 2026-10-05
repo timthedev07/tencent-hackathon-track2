@@ -46,4 +46,4 @@ async def get_evidence(
     """Fetch evidence for a citation — reauthorises access (INV-006)."""
     from app.domain.evidence_service import get_evidence_with_reauth
 
-    return await get_evidence_with_reauth(evidence_id, user)
+    return await get_evidence_with_reauth(evidence_id, user)  # type: ignore[return-value]

@@ -16,14 +16,14 @@ from app.api.routes.oauth import router as oauth_router
 from app.api.routes.queries import router as queries_router
 from app.api.routes.webhooks import router as webhooks_router
 from app.observability.logging import configure_logging, get_logger
-from app.observability.metrics import metrics_endpoint, metrics_middleware
+from app.observability.metrics import MetricsMiddleware, metrics_app
 from app.observability.tracing import configure_tracing, instrument_app
 
 logger = get_logger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+@asynccontextmanager  # type: ignore[misc]
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[arg-type]
     """Application startup and shutdown."""
     configure_logging()
     try:

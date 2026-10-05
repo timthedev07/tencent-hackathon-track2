@@ -91,7 +91,7 @@ async def get_evidence_with_reauth(
             session=session,
             user=user,
             source=source,
-            source_object_id=evidence.source_object_id,
+            source_object_id=UUID(evidence.source_object_id),
         )
 
         if access_result.outcome.value != "allow":

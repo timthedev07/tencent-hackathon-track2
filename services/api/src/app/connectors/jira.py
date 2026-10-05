@@ -39,14 +39,10 @@ class JiraConnector:
 
     source = Source.JIRA
 
-    async def initial_scan(
-        self, connection: SourceConnection, cursor: str | None
-    ) -> ScanPage:
+    async def initial_scan(self, connection: SourceConnection, cursor: str | None) -> ScanPage:
         return ScanPage(objects=[], next_cursor=None)
 
-    async def read_changes(
-        self, connection: SourceConnection, cursor: str | None
-    ) -> ChangePage:
+    async def read_changes(self, connection: SourceConnection, cursor: str | None) -> ChangePage:
         return ChangePage(changes=[], next_cursor=None)
 
     async def fetch_object(

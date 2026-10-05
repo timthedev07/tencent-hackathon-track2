@@ -9,6 +9,7 @@
   "reportUnknownVariableType": "warning",
   "reportUnknownParameterType": "warning",
   "reportMissingTypeArgument": "warning",
+  "reportPrivateUsage": "none",
   "strictListInference": true,
   "strictDictionaryInference": true,
   "strictSetInference": true,

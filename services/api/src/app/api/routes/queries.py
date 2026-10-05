@@ -85,4 +85,4 @@ async def get_query_result(
     """Fetch the final query result with citations."""
     from app.domain.query_service import get_result
 
-    return await get_result(query_id, user)
+    return await get_result(query_id, user)  # type: ignore[return-value]

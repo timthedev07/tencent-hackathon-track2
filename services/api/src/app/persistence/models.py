@@ -21,7 +21,9 @@ from sqlalchemy import (
     LargeBinary,
     Text,
     UniqueConstraint,
-    text,
+)
+from sqlalchemy import (
+    text as sa_text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -232,7 +234,7 @@ class ObjectVersion(Base):
     __table_args__ = (
         UniqueConstraint("source_object_id", "source_revision"),
         Index("ix_object_versions_obj_rev", "source_object_id", "source_revision"),
-        Index("ix_object_versions_tenant_observed", "tenant_id", text("observed_at DESC")),
+        Index("ix_object_versions_tenant_observed", "tenant_id", sa_text("observed_at DESC")),
         Index("ix_object_versions_tenant_status", "tenant_id", "ingestion_status"),
     )
 
@@ -267,7 +269,7 @@ class Chunk(Base):
     __table_args__ = (
         UniqueConstraint("object_version_id", "ordinal"),
         Index("ix_chunks_tenant_version", "tenant_id", "object_version_id"),
-        Index("ix_chunks_tsv", text("tsv"), postgresql_using="gin"),
+        Index("ix_chunks_tsv", sa_text("tsv"), postgresql_using="gin"),
     )
 
     version: Mapped[ObjectVersion] = relationship(back_populates="chunks")
@@ -385,7 +387,9 @@ class QueryRun(Base):
     answer_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
 
     __table_args__ = (
-        Index("ix_query_runs_tenant_user_started", "tenant_id", "user_id", text("started_at DESC")),
+        Index(
+            "ix_query_runs_tenant_user_started", "tenant_id", "user_id", sa_text("started_at DESC")
+        ),
         Index("ix_query_runs_tenant_status", "tenant_id", "status"),
     )
 

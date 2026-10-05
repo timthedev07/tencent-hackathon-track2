@@ -67,7 +67,9 @@ def verify_answer(
     unauthorised = cited_ids - authorised_ids
     if unauthorised:
         CITATION_VERIFICATION_FAILURES.labels(reason="unauthorised_citation").inc()
-        return VerificationResult(valid=False, reason=f"unauthorised_citations: {len(unauthorised)}")
+        return VerificationResult(
+            valid=False, reason=f"unauthorised_citations: {len(unauthorised)}"
+        )
 
     for idx, claim in enumerate(answer.claims):
         if not claim.evidence_ids:

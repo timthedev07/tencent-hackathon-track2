@@ -17,7 +17,7 @@ from alembic import context
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services" / "api" / "src"))
 
 from app.persistence.models import Base
-from app.settings import settings
+from app.settings import get_settings
 
 config = context.config
 
@@ -25,7 +25,8 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Override URL from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+_settings = get_settings()
+config.set_main_option("sqlalchemy.url", _settings.DATABASE_URL)
 
 target_metadata = Base.metadata
 

@@ -46,11 +46,16 @@ def apply_source_diversity(
         else:
             deferred.append(item)
 
+    # Backfill from deferred only if we haven't reached target and
+    # only from sources that haven't hit their cap
     if len(selected) < target_count and deferred:
         for item in deferred:
             if len(selected) >= target_count:
                 break
-            selected.append(item)
+            source_key = item.evidence.source.value
+            if source_counts[source_key] < max_per_source:
+                selected.append(item)
+                source_counts[source_key] += 1
 
     for idx, item in enumerate(selected):
         item.rank = idx

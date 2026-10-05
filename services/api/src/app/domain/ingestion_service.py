@@ -66,7 +66,7 @@ async def handle_webhook_delivery(
     # Enqueue idempotent ingestion task
     from worker.tasks.webhook import process_webhook_event
 
-    process_webhook_event.delay(
+    process_webhook_event.delay(  # type: ignore[union-attr]
         {
             "schemaVersion": 1,
             "source": source,

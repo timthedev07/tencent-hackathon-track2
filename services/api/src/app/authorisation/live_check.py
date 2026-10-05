@@ -135,10 +135,6 @@ async def check_live_access(
         provider_request_id=result.provider_request_id,
         latency_ms=latency_ms,
     )
-        reason_code=result.reason_code,
-        provider_request_id=result.provider_request_id,
-        latency_ms=latency_ms,
-    )
 
 
 async def check_live_access_batch(

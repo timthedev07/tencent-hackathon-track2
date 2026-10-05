@@ -16,26 +16,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-from opentelemetry.instrumentation.redis import RedisInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
 from app.settings import get_settings
 
-_tracer_provider: TracerProvider | None = None
+_tracer_provider: Any = None
 
 
-def configure_tracing() -> TracerProvider:
+def configure_tracing() -> Any:
     """Configure OpenTelemetry tracing."""
     global _tracer_provider
     if _tracer_provider is not None:
         return _tracer_provider
+
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     settings = get_settings()
     resource = Resource.create(
@@ -60,12 +56,19 @@ def configure_tracing() -> TracerProvider:
 
 def instrument_app(app: Any) -> None:
     """Instrument FastAPI, HTTPX, SQLAlchemy, Redis."""
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    from opentelemetry.instrumentation.redis import RedisInstrumentor
+    from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
     FastAPIInstrumentor.instrument_app(app)
     HTTPXClientInstrumentor().instrument()
     SQLAlchemyInstrumentor().instrument(engine="default")
     RedisInstrumentor().instrument()
 
 
-def get_tracer(module_name: str) -> trace.Tracer:
+def get_tracer(module_name: str) -> Any:
     """Return a tracer for the given module."""
+    from opentelemetry import trace
+
     return trace.get_tracer(module_name)

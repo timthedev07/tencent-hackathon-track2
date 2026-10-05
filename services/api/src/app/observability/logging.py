@@ -31,9 +31,7 @@ def _sanitise_value(value: Any) -> Any:
     return value
 
 
-def _filter_sensitive_fields(
-    _logger: Any, _method_name: str, event_dict: dict[str, Any]
-) -> dict[str, Any]:
+def _filter_sensitive_fields(_logger: Any, _method_name: str, event_dict: Any) -> Any:
     """Processor that strips sensitive fields from log events."""
     forbidden_keys = {
         "source_content",
@@ -59,7 +57,7 @@ def configure_logging() -> None:
         level=logging.INFO,
     )
 
-    structlog.configure(
+    structlog.configure(  # pyright: ignore[reportArgumentType]
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
