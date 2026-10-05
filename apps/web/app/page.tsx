@@ -9,6 +9,7 @@ export default function Home() {
       <div className="mt-8 flex space-x-4">
         <Button asChild><Link href="/query">Ask a question</Link></Button>
         <Button variant="outline" asChild><Link href="/settings">Connection settings</Link></Button>
+        <Button variant="outline" asChild><Link href="/login">Sign in</Link></Button>
       </div>
     </main>
   );

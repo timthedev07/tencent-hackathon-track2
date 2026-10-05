@@ -74,3 +74,41 @@ export async function getAuditCapsule(queryId: string): Promise<AuditResponse> {
 export async function startOAuth(provider: 'atlassian' | 'slack' | 'google'): Promise<OAuthStartResponse> {
   return apiFetch<OAuthStartResponse>(`/oauth/${provider}/start`);
 }
+
+export interface ConnectionStatus {
+  source: string;
+  connected: boolean;
+  display_name: string | null;
+}
+export interface ConnectionsResponse { connections: ConnectionStatus[] }
+
+export async function getConnections(): Promise<ConnectionsResponse> {
+  return apiFetch<ConnectionsResponse>('/oauth/connections');
+}
+
+export async function devLogin(subject: string): Promise<{ token: string; subject: string }> {
+  const response = await fetch(`${API_URL}${API_PREFIX}/auth/dev-login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subject }),
+  });
+  if (!response.ok) throw new Error('Dev login failed');
+  return response.json();
+}
+
+export function setAuthToken(token: string): void {
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem('auth_token', token);
+  }
+}
+
+export function getAuthToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage.getItem('auth_token');
+}
+
+export function clearAuthToken(): void {
+  if (typeof window !== 'undefined') {
+    window.localStorage.removeItem('auth_token');
+  }
+}
