@@ -57,6 +57,9 @@ asyncio_mode = "auto"
 testpaths = ["tests", "services/api/tests", "services/worker/tests"]
 pythonpath = ["services/api/src", "services/worker/src"]
 filterwarnings = ["error"]
+markers = [
+    "security: Security invariant tests (SEC-001 through SEC-010)",
+]
 
 [tool.coverage.run]
 source = ["services/api/src/app", "services/worker/src/worker"]

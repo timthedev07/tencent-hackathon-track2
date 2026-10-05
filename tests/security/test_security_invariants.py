@@ -9,6 +9,8 @@ is a FAILED test.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 # Mark all tests as security tests
@@ -127,7 +129,7 @@ class TestINV008NoContentInLogs:
             "access_token": "token123",
             "safe_field": "ok",
         }
-        filtered = _filter_sensitive_fields(None, None, event)
+        filtered = _filter_sensitive_fields(None, "info", event)
         assert "source_content" not in filtered
         assert "chunk_text" not in filtered
         assert "query_plaintext" not in filtered
@@ -162,7 +164,7 @@ class TestINV009AuditIntegrity:
             sequence_no = 1
             tenant_id = "00000000-0000-0000-0000-000000000000"
             query_id = None
-            canonical_payload: dict = {"test": True}
+            canonical_payload: ClassVar[dict] = {"test": True}
             created_at = None
 
         hash1 = compute_event_hash(FakeEvent(), "genesis-v1-00000000")
