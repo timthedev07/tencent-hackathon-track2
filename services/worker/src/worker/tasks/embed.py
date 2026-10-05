@@ -12,7 +12,7 @@ from worker.celery_app import celery_app
 logger = get_logger(__name__)
 
 
-@celery_app.task(name="worker.tasks.embed.generate_embeddings")
+@celery_app.task(name="worker.tasks.embed.generate_embeddings")  # type: ignore[misc]
 def generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
     """Generate embeddings for chunks and activate the version."""
     import asyncio

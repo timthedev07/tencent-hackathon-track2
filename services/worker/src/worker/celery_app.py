@@ -77,4 +77,4 @@ celery_app.autodiscover_tasks(
     ]
 )
 
-import worker.tasks  # noqa: F401, E402
+import worker.tasks  # type: ignore[unused-import]  # noqa: F401, E402

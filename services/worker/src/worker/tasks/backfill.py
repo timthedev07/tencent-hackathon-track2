@@ -11,7 +11,7 @@ from worker.celery_app import celery_app
 logger = get_logger(__name__)
 
 
-@celery_app.task(name="worker.tasks.backfill.run_backfill")
+@celery_app.task(name="worker.tasks.backfill.run_backfill")  # type: ignore[misc]
 def run_backfill(source_connection_id: str) -> dict[str, Any]:
     """Backfill all objects for a source connection."""
     import asyncio

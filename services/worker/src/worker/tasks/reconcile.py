@@ -11,7 +11,7 @@ from worker.celery_app import celery_app
 logger = get_logger(__name__)
 
 
-@celery_app.task(name="worker.tasks.reconcile.run_reconciliation")
+@celery_app.task(name="worker.tasks.reconcile.run_reconciliation")  # type: ignore[misc]
 def run_reconciliation() -> dict[str, Any]:
     """Run reconciliation for all source connections."""
     import asyncio

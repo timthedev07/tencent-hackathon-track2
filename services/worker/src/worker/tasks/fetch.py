@@ -11,7 +11,7 @@ from worker.celery_app import celery_app
 logger = get_logger(__name__)
 
 
-@celery_app.task(name="worker.tasks.fetch.fetch_source_object")
+@celery_app.task(name="worker.tasks.fetch.fetch_source_object")  # type: ignore[misc]
 def fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
     """Fetch a source object and enqueue normalisation."""
     import asyncio
@@ -27,5 +27,5 @@ async def _fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
     # persist the raw object data, then enqueue normalisation.
     from worker.tasks.normalise import normalise_object
 
-    normalise_object.delay(message)
+    normalise_object.delay(message)  # type: ignore[union-attr]
     return {"status": "fetched", "source": source}

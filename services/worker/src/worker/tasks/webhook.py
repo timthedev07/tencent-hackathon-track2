@@ -11,7 +11,7 @@ from worker.celery_app import celery_app
 logger = get_logger(__name__)
 
 
-@celery_app.task(name="worker.tasks.webhook.process_webhook_event")
+@celery_app.task(name="worker.tasks.webhook.process_webhook_event")  # type: ignore[misc]
 def process_webhook_event(message: dict[str, Any]) -> dict[str, Any]:
     """Process a webhook delivery — fetch, normalise, chunk, embed."""
     import asyncio
@@ -37,11 +37,11 @@ async def _process_webhook_event(message: dict[str, Any]) -> dict[str, Any]:
         # Priority: deletions queue
         from worker.tasks.deletions import process_deletion
 
-        process_deletion.delay(message)
+        process_deletion.delay(message)  # type: ignore[union-attr]
     else:
         # Standard ingestion: fetch → normalise → ACL → chunk → embed
         from worker.tasks.fetch import fetch_source_object
 
-        fetch_source_object.delay(message)
+        fetch_source_object.delay(message)  # type: ignore[union-attr]
 
     return {"status": "routed", "source": source, "delivery_id": delivery_id}

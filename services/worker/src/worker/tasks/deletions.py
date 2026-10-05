@@ -11,7 +11,7 @@ from worker.celery_app import celery_app
 logger = get_logger(__name__)
 
 
-@celery_app.task(name="worker.tasks.deletions.process_deletion")
+@celery_app.task(name="worker.tasks.deletions.process_deletion")  # type: ignore[misc]
 def process_deletion(message: dict[str, Any]) -> dict[str, Any]:
     """Process a deletion or ACL revocation event (highest priority)."""
     import asyncio

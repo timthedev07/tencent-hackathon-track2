@@ -11,7 +11,7 @@ from worker.celery_app import celery_app
 logger = get_logger(__name__)
 
 
-@celery_app.task(name="worker.tasks.chunk.chunk_object")
+@celery_app.task(name="worker.tasks.chunk.chunk_object")  # type: ignore[misc]
 def chunk_object(message: dict[str, Any]) -> dict[str, Any]:
     """Chunk an object and enqueue embedding generation."""
     import asyncio
@@ -29,5 +29,5 @@ async def _chunk_object(message: dict[str, Any]) -> dict[str, Any]:
 
     from worker.tasks.embed import generate_embeddings
 
-    generate_embeddings.delay(message)
+    generate_embeddings.delay(message)  # type: ignore[union-attr]
     return {"status": "chunked", "source": source}

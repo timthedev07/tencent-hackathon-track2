@@ -11,7 +11,7 @@ from worker.celery_app import celery_app
 logger = get_logger(__name__)
 
 
-@celery_app.task(name="worker.tasks.normalise.normalise_object")
+@celery_app.task(name="worker.tasks.normalise.normalise_object")  # type: ignore[misc]
 def normalise_object(message: dict[str, Any]) -> dict[str, Any]:
     """Normalise a fetched object and enqueue ACL resolution."""
     import asyncio
@@ -27,5 +27,5 @@ async def _normalise_object(message: dict[str, Any]) -> dict[str, Any]:
     # persist the NormalisedObject, then enqueue ACL resolution.
     from worker.tasks.acl import resolve_acl
 
-    resolve_acl.delay(message)
+    resolve_acl.delay(message)  # type: ignore[union-attr]
     return {"status": "normalised", "source": source}

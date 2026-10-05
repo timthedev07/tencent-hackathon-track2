@@ -11,7 +11,7 @@ from worker.celery_app import celery_app
 logger = get_logger(__name__)
 
 
-@celery_app.task(name="worker.tasks.acl.resolve_acl")
+@celery_app.task(name="worker.tasks.acl.resolve_acl")  # type: ignore[misc]
 def resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
     """Resolve ACL grants for an object and enqueue chunking."""
     import asyncio
@@ -25,5 +25,5 @@ async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
 
     from worker.tasks.chunk import chunk_object
 
-    chunk_object.delay(message)
+    chunk_object.delay(message)  # type: ignore[union-attr]
     return {"status": "acl_resolved", "source": source}

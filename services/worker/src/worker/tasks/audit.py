@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from app.observability.logging import get_logger
 from app.persistence.models import Tenant
@@ -14,7 +15,7 @@ from worker.celery_app import celery_app
 logger = get_logger(__name__)
 
 
-@celery_app.task(name="worker.tasks.audit.checkpoint_all_tenants")
+@celery_app.task(name="worker.tasks.audit.checkpoint_all_tenants")  # type: ignore[misc]
 def checkpoint_all_tenants() -> dict[str, Any]:
     """Create S3 checkpoints for every tenant's audit chain."""
     import asyncio
@@ -34,13 +35,14 @@ async def _checkpoint_all_tenants() -> dict[str, Any]:
 
     for tenant in tenants:
         async with factory() as session:
-            await set_tenant_context(session, tenant.id)
-            chain_ok = await verify_chain(session, tenant.id)
+            tenant_id = UUID(tenant.id)
+            await set_tenant_context(session, tenant_id)
+            chain_ok = await verify_chain(session, tenant_id)
             if not chain_ok:
-                logger.error("Audit chain verification failed", tenant_id=str(tenant.id))
-                results.append({"tenantId": str(tenant.id), "status": "failed_verification"})
+                logger.error("Audit chain verification failed", tenant_id=str(tenant_id))
+                results.append({"tenantId": str(tenant_id), "status": "failed_verification"})
                 continue
-            checkpoint = await create_checkpoint(session, tenant.id)
+            checkpoint = await create_checkpoint(session, tenant_id)
             results.append(checkpoint)
 
     logger.info("Checkpoint run complete", tenant_count=len(results))
