@@ -1,0 +1,130 @@
+{
+  "fixtureVersion": "chronicle-pay-2026-042-v1",
+  "tenant": {
+    "externalOrgKey": "dev-org",
+    "displayName": "Chronicle Demo Organisation"
+  },
+  "users": [
+    {"subject": "alice", "displayName": "Alice Chen", "email": "alice@example.test", "compliance": false},
+    {"subject": "bob", "displayName": "Bob Contractor", "email": "bob@example.test", "compliance": false},
+    {"subject": "compliance", "displayName": "Carol Compliance", "email": "compliance@example.test", "compliance": true}
+  ],
+  "objects": [
+    {
+      "key": "jira-postmortem",
+      "source": "jira",
+      "externalObjectId": "PAY-2026-042",
+      "objectType": "issue",
+      "title": "PAY-2026-042 Payment Gateway Postmortem",
+      "url": "https://fixtures.example.test/jira/PAY-2026-042",
+      "revision": "2026-09-01T12:00:00Z",
+      "validFrom": "2026-09-01T11:30:00Z",
+      "observedAt": "2026-09-01T12:00:00Z",
+      "content": "The final postmortem concludes that an expired mTLS certificate caused the payment gateway outage. The certificate rotation job failed after a deployment removed its production credential. Service recovered after the certificate was renewed.",
+      "readers": ["alice", "bob", "compliance"],
+      "claims": [
+        {"subject": "PAY-2026-042", "predicate": "root_cause", "object": "expired mTLS certificate"},
+        {"subject": "PAY-2026-042", "predicate": "review_status", "object": "missing security approval"}
+      ]
+    },
+    {
+      "key": "confluence-runbook",
+      "source": "confluence",
+      "externalObjectId": "PAY-RUNBOOK-001",
+      "objectType": "page",
+      "title": "Payment Gateway Recovery Runbook",
+      "url": "https://fixtures.example.test/confluence/PAY-RUNBOOK-001",
+      "revision": "1",
+      "validFrom": "2026-08-01T00:00:00Z",
+      "observedAt": "2026-08-01T00:05:00Z",
+      "content": "The current recovery runbook says payment outages are normally caused by database connection exhaustion. Restart the connection pool before investigating TLS certificates. This runbook has not been reviewed for 120 days.",
+      "readers": ["alice", "bob", "compliance"],
+      "claims": [
+        {"subject": "PAY-2026-042", "predicate": "root_cause", "object": "database connection exhaustion"},
+        {"subject": "PAY-RUNBOOK-001", "predicate": "freshness", "object": "stale"}
+      ]
+    },
+    {
+      "key": "slack-incident-thread",
+      "source": "slack",
+      "externalObjectId": "C-INCIDENTS:1725183000.001",
+      "objectType": "thread",
+      "title": "#incidents PAY-2026-042",
+      "url": "https://fixtures.example.test/slack/C-INCIDENTS/1725183000001",
+      "revision": "1725188400.001",
+      "validFrom": "2026-09-01T09:30:00Z",
+      "observedAt": "2026-09-01T09:31:00Z",
+      "content": "At 09:30 the team observed TLS handshake errors, but the root cause was still unconfirmed. The database was healthy. Incident command requested certificate and rotation-job checks.",
+      "readers": ["alice", "bob", "compliance"],
+      "claims": [
+        {"subject": "PAY-2026-042", "predicate": "early_status", "object": "TLS errors; root cause unconfirmed"}
+      ]
+    },
+    {
+      "key": "drive-security-report",
+      "source": "google_drive",
+      "externalObjectId": "drive-security-PAY-2026-042",
+      "objectType": "document",
+      "title": "Restricted Security Review PAY-2026-042",
+      "url": "https://fixtures.example.test/drive/drive-security-PAY-2026-042",
+      "revision": "2026-09-01T10:15:00Z",
+      "validFrom": "2026-09-01T10:00:00Z",
+      "observedAt": "2026-09-01T10:15:00Z",
+      "content": "Restricted security review: the certificate rotation job lacked a production approval and its credential was removed. Contractor access to this report requires a temporary explicit grant.",
+      "readers": ["alice", "compliance"],
+      "claims": [
+        {"subject": "PAY-2026-042", "predicate": "control_gap", "object": "missing production approval"}
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "grant-bob-drive",
+      "type": "permission_grant",
+      "source": "google_drive",
+      "externalObjectId": "drive-security-PAY-2026-042",
+      "subject": "bob"
+    },
+    {
+      "id": "revoke-bob-drive",
+      "type": "permission_revoke",
+      "source": "google_drive",
+      "externalObjectId": "drive-security-PAY-2026-042",
+      "subject": "bob"
+    },
+    {
+      "id": "publish-runbook-v2",
+      "type": "content_update",
+      "source": "confluence",
+      "externalObjectId": "PAY-RUNBOOK-001",
+      "revision": "2",
+      "title": "Payment Gateway Recovery Runbook",
+      "validFrom": "2026-09-02T09:00:00Z",
+      "content": "The revised recovery runbook starts with mTLS certificate expiry and rotation-job credential checks. Database connection-pool restart is only a secondary diagnostic step. Security approval is required for rotation credential changes."
+    }
+  ],
+  "backtests": [
+    {
+      "name": "alice-current-root-cause",
+      "question": "What caused the payment gateway outage?",
+      "requester": "alice",
+      "expectedVisible": ["PAY-2026-042", "PAY-RUNBOOK-001", "C-INCIDENTS:1725183000.001", "drive-security-PAY-2026-042"],
+      "expectedBehavior": "answer_with_final_postmortem"
+    },
+    {
+      "name": "alice-no-hindsight",
+      "question": "What caused the payment gateway outage?",
+      "requester": "alice",
+      "asOf": "2026-09-01T10:30:00Z",
+      "expectedVisible": ["PAY-RUNBOOK-001", "C-INCIDENTS:1725183000.001", "drive-security-PAY-2026-042"],
+      "expectedBehavior": "report_uncertainty_without_future_postmortem"
+    },
+    {
+      "name": "bob-restricted-drive",
+      "question": "What caused the payment gateway outage?",
+      "requester": "bob",
+      "expectedVisible": ["PAY-2026-042", "PAY-RUNBOOK-001", "C-INCIDENTS:1725183000.001"],
+      "expectedBehavior": "exclude_restricted_drive_without_metadata_leak"
+    }
+  ]
+}

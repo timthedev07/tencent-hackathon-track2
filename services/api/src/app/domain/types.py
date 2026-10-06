@@ -149,8 +149,10 @@ class AuthorisedEvidence(BaseModel):
     evidence_id: UUID
     chunk_id: UUID
     source_object_id: UUID
+    object_version_id: UUID | None = None
     source: Source
     source_revision: str
+    content_hash: str | None = None
     title: str | None = None
     canonical_url: str | None = None
     text: str = ""
@@ -186,6 +188,12 @@ class CompiledContext(BaseModel):
     system_prompt: str
     total_token_count: int
     query_text: str = ""
+    requester: str = "unknown"
+    as_of: datetime | None = None
+    policy_version: str = "policy-v1"
+    context_compiler_version: str = "context-v1"
+    evidence_manifest: list[dict[str, str | None]] = Field(default_factory=list)
+    snapshot_hash: str = ""
 
 
 # ── Connector result types ──────────────────────────────────────────

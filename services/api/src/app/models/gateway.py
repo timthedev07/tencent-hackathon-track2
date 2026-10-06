@@ -6,6 +6,8 @@ Map provider responses into Pydantic domain objects at the gateway boundary.
 
 from __future__ import annotations
 
+import hashlib
+import math
 from typing import Any, Protocol, runtime_checkable
 
 from app.domain.types import (
@@ -19,6 +21,14 @@ from app.observability.logging import get_logger
 from app.settings import get_settings
 
 logger = get_logger(__name__)
+
+
+def deterministic_embedding(text: str, dimension: int) -> list[float]:
+    """Create a stable local-only embedding without network dependencies."""
+    seed = hashlib.sha256(text.encode("utf-8")).digest()
+    values = [((seed[index % len(seed)] / 255.0) * 2.0) - 1.0 for index in range(dimension)]
+    norm = math.sqrt(sum(value * value for value in values)) or 1.0
+    return [value / norm for value in values]
 
 
 @runtime_checkable
@@ -62,8 +72,8 @@ class StubModelGateway:
         texts: list[str],
         model_version: str,
     ) -> list[list[float]]:
-        """Return zero vectors for development."""
-        return [[0.0] * self.embedding_dimension for _ in texts]
+        """Return deterministic non-zero vectors for repeatable local retrieval."""
+        return [deterministic_embedding(text, self.embedding_dimension) for text in texts]
 
     async def rerank(
         self,
@@ -95,8 +105,7 @@ class StubModelGateway:
                 "The authorised evidence does not contain enough detail to answer this question."
             )
             return GeneratedAnswer(
-                answer=sentence
-                or fallback_answer,
+                answer=sentence or fallback_answer,
                 claims=[GeneratedClaim(text=sentence, evidence_ids=[evidence.evidence_id])]
                 if sentence
                 else [],

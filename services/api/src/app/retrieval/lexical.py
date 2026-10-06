@@ -5,6 +5,7 @@ INV-001: Returns only chunk IDs and ranks — no text content.
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.types import Source
 from app.observability.logging import get_logger
 from app.persistence.models import Chunk, ObjectVersion, SourceObject
+from app.retrieval.temporal import active_at
 from app.settings import get_settings
 
 logger = get_logger(__name__)
@@ -33,6 +35,7 @@ async def lexical_search(
     tenant_id: UUID,
     query_text: str,
     top_k: int | None = None,
+    as_of: datetime | None = None,
 ) -> list[LexicalHit]:
     """Search chunks using PostgreSQL tsvector full-text search."""
     settings = get_settings()
@@ -41,6 +44,16 @@ async def lexical_search(
     rank_expr = func.ts_rank(
         Chunk.tsv,
         func.plainto_tsquery("english", query_text),
+    )
+    temporal_filters = (
+        [
+            SourceObject.is_queryable.is_(True),
+            SourceObject.is_deleted.is_(False),
+            SourceObject.current_version_id == ObjectVersion.id,
+            ObjectVersion.retired_at.is_(None),
+        ]
+        if as_of is None
+        else [active_at(ObjectVersion, as_of)]
     )
     stmt = (
         select(
@@ -54,12 +67,9 @@ async def lexical_search(
         .where(
             Chunk.tenant_id == tenant_id,
             SourceObject.tenant_id == tenant_id,
-            SourceObject.is_queryable.is_(True),
-            SourceObject.is_deleted.is_(False),
-            SourceObject.current_version_id == ObjectVersion.id,
             ObjectVersion.ingestion_status == "active",
-            ObjectVersion.retired_at.is_(None),
             Chunk.tsv.isnot(None),
+            *temporal_filters,
         )
         .order_by(rank_expr.desc())
         .limit(limit)

@@ -11,9 +11,12 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.api.routes.audit import router as audit_router
+from app.api.routes.backtests import router as backtests_router
+from app.api.routes.demo import router as demo_router
 from app.api.routes.dev_auth import router as dev_auth_router
 from app.api.routes.evidence import router as evidence_router
 from app.api.routes.health import router as health_router
+from app.api.routes.knowledge_audit import router as knowledge_audit_router
 from app.api.routes.oauth import router as oauth_router
 from app.api.routes.queries import router as queries_router
 from app.api.routes.webhooks import router as webhooks_router
@@ -89,6 +92,9 @@ def create_app() -> FastAPI:
     app.include_router(dev_auth_router, prefix="/v1/auth", tags=["auth"])
     app.include_router(evidence_router, prefix="/v1", tags=["evidence"])
     app.include_router(audit_router, prefix="/v1", tags=["audit"])
+    app.include_router(backtests_router, prefix="/v1", tags=["backtests"])
+    app.include_router(knowledge_audit_router, prefix="/v1", tags=["knowledge-audit"])
+    app.include_router(demo_router, prefix="/v1", tags=["demo"])
     app.include_router(webhooks_router, prefix="/v1/webhooks", tags=["webhooks"])
     app.include_router(oauth_router, prefix="/v1/oauth", tags=["oauth"])
     app.mount("/metrics", metrics_app)

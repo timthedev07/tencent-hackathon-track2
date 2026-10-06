@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.observability.logging import get_logger
-from app.persistence.models import AuditEvent
+from app.persistence.models import AuditCheckpoint, AuditEvent
 from app.settings import get_settings
 
 logger = get_logger(__name__)
@@ -94,6 +94,17 @@ async def create_checkpoint(session: AsyncSession, tenant_id: UUID) -> dict[str,
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _upload)
 
+    exported_location = f"s3://{settings.OBJECT_STORE_BUCKET}/{object_key}"
+    session.add(
+        AuditCheckpoint(
+            tenant_id=tenant_id,
+            chain_head_hash=root_hash,
+            signed_root=signature,
+            signer_key_id="demo-hmac-v1",
+            exported_location=exported_location,
+        )
+    )
+
     from app.audit.chain import append_event
 
     await append_event(
@@ -109,4 +120,48 @@ async def create_checkpoint(session: AsyncSession, tenant_id: UUID) -> dict[str,
         query_id=None,
     )
     logger.info("Audit checkpoint written", tenant_id=str(tenant_id), object_key=object_key)
-    return {"tenantId": str(tenant_id), "objectKey": object_key, "status": "written"}
+    return {
+        "tenantId": str(tenant_id),
+        "objectKey": object_key,
+        "exportedLocation": exported_location,
+        "chainHead": root_hash,
+        "signedRoot": signature,
+        "status": "written",
+    }
+
+
+async def verify_latest_checkpoint(session: AsyncSession, tenant_id: UUID) -> dict[str, Any]:
+    """Verify the latest separately exported root against the retained chain."""
+    checkpoint = (
+        await session.execute(
+            select(AuditCheckpoint)
+            .where(AuditCheckpoint.tenant_id == tenant_id)
+            .order_by(AuditCheckpoint.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if checkpoint is None:
+        return {"present": False, "valid": False, "reason": "checkpoint_missing"}
+
+    signature_valid = hmac.compare_digest(
+        checkpoint.signed_root,
+        _sign_root(checkpoint.chain_head_hash),
+    )
+    retained_hash = (
+        await session.execute(
+            select(AuditEvent.event_hash).where(
+                AuditEvent.tenant_id == tenant_id,
+                AuditEvent.event_hash == checkpoint.chain_head_hash,
+            )
+        )
+    ).scalar_one_or_none()
+    chain_root_present = retained_hash is not None
+    return {
+        "present": True,
+        "valid": signature_valid and chain_root_present,
+        "signatureValid": signature_valid,
+        "chainRootPresent": chain_root_present,
+        "chainHead": checkpoint.chain_head_hash,
+        "exportedLocation": checkpoint.exported_location,
+        "createdAt": checkpoint.created_at.isoformat(),
+    }

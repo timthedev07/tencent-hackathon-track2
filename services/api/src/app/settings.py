@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     APP_BASE_URL: str = "http://localhost:8000"
     WEB_BASE_URL: str = "http://localhost:3000"
     CORS_ALLOWED_ORIGINS: str = "http://localhost:3000"
+    SQL_ECHO: bool = False
 
     # ── Datastores ─────────────────────────────────────────────────
     DATABASE_URL: str = "postgresql+asyncpg://assistant:assistant@localhost:5432/assistant"

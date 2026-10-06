@@ -21,6 +21,15 @@ async def main() -> None:
         await conn.execute(text("SET ROLE assistant"))
         # Truncate all tables in dependency order
         tables = [
+            "fixture_events",
+            "backtest_results",
+            "backtest_runs",
+            "backtest_cases",
+            "query_events",
+            "audit_checkpoints",
+            "evidence_capsules",
+            "policy_versions",
+            "claims",
             "audit_events",
             "evidence_items",
             "access_decisions",
@@ -42,6 +51,10 @@ async def main() -> None:
             await conn.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE"))
 
     await engine.dispose()
+
+    from seed_fixtures import main as seed_fixtures
+
+    await seed_fixtures()
 
 
 if __name__ == "__main__":

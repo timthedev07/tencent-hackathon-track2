@@ -23,11 +23,15 @@ async def find_identity_link(
     session: AsyncSession,
     user_id: UUID,
     source: Source,
+    as_of: datetime | None = None,
 ) -> IdentityLink | None:
     """Find a user's verified identity link for a given source.
 
     If missing or ambiguous, the source is denied (INV-002).
     """
+    from app.retrieval.temporal import active_at, active_now
+
+    temporal_filter = active_at(IdentityLink, as_of) if as_of else active_now(IdentityLink)
     stmt = (
         select(IdentityLink)
         .join(
@@ -38,6 +42,7 @@ async def find_identity_link(
             IdentityLink.user_id == user_id,
             SourceConnection.source == source.value,
             IdentityLink.status == "verified",
+            temporal_filter,
         )
         .limit(2)
     )
@@ -84,6 +89,8 @@ async def create_identity_link(
         verified_at=datetime.now(UTC),
         verified_by=verified_by,
         status="verified",
+        valid_from=datetime.now(UTC),
+        observed_at=datetime.now(UTC),
     )
     session.add(link)
     await session.flush()

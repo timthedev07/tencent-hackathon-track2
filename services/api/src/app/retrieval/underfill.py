@@ -8,6 +8,7 @@ When HNSW returns too few results, progressively widen the search:
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select, text
@@ -18,6 +19,7 @@ from app.observability.logging import get_logger
 from app.observability.metrics import RETRIEVAL_UNDERFILL
 from app.persistence.models import Chunk, ObjectVersion, SourceObject
 from app.retrieval.lexical import LexicalHit, lexical_search
+from app.retrieval.temporal import active_at
 from app.retrieval.vector import VectorHit, vector_search
 from app.settings import get_settings
 
@@ -31,6 +33,7 @@ async def vector_search_with_fallback(
     tenant_id: UUID,
     query_embedding: list[float],
     top_k: int | None = None,
+    as_of: datetime | None = None,
 ) -> list[VectorHit]:
     """Vector search with underfill fallback.
 
@@ -42,7 +45,7 @@ async def vector_search_with_fallback(
     limit = top_k or settings.CANDIDATE_TOP_K
 
     # Attempt 1: standard HNSW search
-    hits = await vector_search(session, tenant_id, query_embedding, limit)
+    hits = await vector_search(session, tenant_id, query_embedding, limit, as_of)
 
     if len(hits) >= _MIN_CANDIDATES:
         return hits
@@ -56,7 +59,7 @@ async def vector_search_with_fallback(
 
     # Attempt 2: increase ef_search via SET
     await session.execute(text("SET LOCAL hnsw.ef_search = 200"))
-    hits = await vector_search(session, tenant_id, query_embedding, limit)
+    hits = await vector_search(session, tenant_id, query_embedding, limit, as_of)
 
     if len(hits) >= _MIN_CANDIDATES:
         return hits
@@ -65,6 +68,16 @@ async def vector_search_with_fallback(
 
     # Attempt 3: exact scan (sequential, no index)
     distance = Chunk.embedding.cosine_distance(query_embedding)
+    temporal_filters = (
+        [
+            SourceObject.is_queryable.is_(True),
+            SourceObject.is_deleted.is_(False),
+            SourceObject.current_version_id == ObjectVersion.id,
+            ObjectVersion.retired_at.is_(None),
+        ]
+        if as_of is None
+        else [active_at(ObjectVersion, as_of)]
+    )
     stmt = (
         select(
             Chunk.id,
@@ -77,9 +90,9 @@ async def vector_search_with_fallback(
         .where(
             Chunk.tenant_id == tenant_id,
             SourceObject.tenant_id == tenant_id,
-            SourceObject.is_queryable.is_(True),
-            SourceObject.is_deleted.is_(False),
+            ObjectVersion.ingestion_status == "active",
             Chunk.embedding.isnot(None),
+            *temporal_filters,
         )
         .order_by(distance.asc())
         .limit(limit)
@@ -110,6 +123,7 @@ async def lexical_search_with_fallback(
     tenant_id: UUID,
     query_text: str,
     top_k: int | None = None,
+    as_of: datetime | None = None,
 ) -> list[LexicalHit]:
     """Lexical search with query widening fallback.
 
@@ -120,7 +134,7 @@ async def lexical_search_with_fallback(
     settings = get_settings()
     limit = top_k or settings.CANDIDATE_TOP_K
 
-    hits = await lexical_search(session, tenant_id, query_text, limit)
+    hits = await lexical_search(session, tenant_id, query_text, limit, as_of)
 
     if len(hits) >= _MIN_CANDIDATES:
         return hits
@@ -131,7 +145,7 @@ async def lexical_search_with_fallback(
     terms = query_text.split()
     if len(terms) > 1:
         widened_query = " | ".join(terms)
-        widened_hits = await lexical_search(session, tenant_id, widened_query, limit)
+        widened_hits = await lexical_search(session, tenant_id, widened_query, limit, as_of)
         if len(widened_hits) > len(hits):
             return widened_hits
 

@@ -7,6 +7,7 @@ GET /v1/queries/{queryId} — final result
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
@@ -22,9 +23,10 @@ router = APIRouter()
 class CreateQueryRequest(BaseModel):
     """Query creation request — must NOT contain tenant_id (INV-007)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     query: str = Field(min_length=1, max_length=2000)
+    as_of: datetime | None = Field(default=None, alias="asOf")
 
     @field_validator("query")
     @classmethod
@@ -33,6 +35,13 @@ class CreateQueryRequest(BaseModel):
         if not cleaned:
             raise ValueError("Query must contain non-whitespace text")
         return cleaned
+
+    @field_validator("as_of")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("asOf must include a timezone")
+        return value
 
 
 class CreateQueryResponse(BaseModel):
@@ -50,7 +59,9 @@ class Citation(BaseModel):
 class QueryResult(BaseModel):
     queryId: str
     status: str
+    asOf: str | None = None
     answer: str | None = None
+    claims: list[dict] = Field(default_factory=list)
     citations: list[Citation] = Field(default_factory=list)
     partialSourceWarnings: list[dict] = Field(default_factory=list)
 
@@ -72,6 +83,7 @@ async def create_query(
         user_id=user.user_id,
         tenant_id=user.tenant_id,
         query_text=request.query,
+        as_of=request.as_of,
     )
     return CreateQueryResponse(queryId=str(query_run["id"]), status="created")
 

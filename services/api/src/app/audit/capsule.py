@@ -6,6 +6,7 @@ encrypted; the capsule references ciphertext, never plaintext.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import UUID
 
@@ -14,7 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.credentials import EncryptedPayload, get_credential_manager
 from app.observability.logging import get_logger
-from app.persistence.models import AccessDecision, AuditEvent, EvidenceItem, QueryRun
+from app.persistence.models import (
+    AccessDecision,
+    AuditEvent,
+    EvidenceCapsule,
+    EvidenceItem,
+    QueryRun,
+)
 
 logger = get_logger(__name__)
 
@@ -65,12 +72,20 @@ async def build_evidence_capsule(
         )
     ).scalar_one_or_none()
 
+    persisted_capsule = (
+        await session.execute(select(EvidenceCapsule).where(EvidenceCapsule.query_id == query_id))
+    ).scalar_one_or_none()
+
     cm = get_credential_manager()
-    answer_text: str | None = None
+    answer: dict[str, Any] | str | None = None
     if run.answer_ciphertext:
         answer_text = cm.decrypt_bytes(EncryptedPayload(ciphertext=run.answer_ciphertext)).decode(
             "utf-8"
         )
+        try:
+            answer = json.loads(answer_text)
+        except json.JSONDecodeError:
+            answer = answer_text
 
     acl_outcomes = [
         {
@@ -88,6 +103,8 @@ async def build_evidence_capsule(
             "evidenceId": str(e.id),
             "source": e.source,
             "sourceRevision": e.source_revision,
+            "objectVersionId": str(e.object_version_id) if e.object_version_id else None,
+            "contentHash": e.content_hash,
             "rank": e.rank,
         }
         for e in evidence
@@ -118,17 +135,23 @@ async def build_evidence_capsule(
         "tenantId": str(run.tenant_id),
         "userIdentifier": str(run.user_id),
         "timestamp": run.started_at.isoformat() if run.started_at else None,
+        "asOf": run.as_of.isoformat() if run.as_of else None,
         "promptVersion": run.prompt_version,
+        "policyVersion": run.policy_version,
         "modelVersion": run.model_version,
+        "embeddingVersion": run.embedding_version,
         "rerankerVersion": run.reranker_version,
+        "contextCompilerVersion": run.context_compiler_version,
+        "authorisedContextHash": run.authorised_context_hash,
+        "contextManifest": persisted_capsule.context_manifest if persisted_capsule else None,
         "candidateObjectIds": [str(d.source_object_id) for d in decisions],
         "accessDecisions": acl_outcomes,
         "authorisedEvidenceIds": [str(e.id) for e in evidence],
         "evidenceManifest": evidence_manifest,
         "citations": citations,
-        "answer": answer_text,
+        "answer": answer,
         "latencies": {"totalMs": run.latency_ms},
-        "partialSourceWarnings": partial_warnings,
+        "partialSources": partial_warnings,
         "errors": errors,
         "auditChainEventId": str(audit_event.id) if audit_event else None,
         "queryStatus": run.status,

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -35,6 +36,7 @@ async def create_query_run(
     user_id: UUID,
     tenant_id: UUID,
     query_text: str,
+    as_of: datetime | None = None,
 ) -> dict:
     """Create a new query run with encrypted query text (INV-005)."""
     cm = get_credential_manager()
@@ -47,6 +49,7 @@ async def create_query_run(
             tenant_id=tenant_id,
             user_id=user_id,
             query_ciphertext=encrypted_query.ciphertext,
+            as_of=as_of,
             status="created",
         )
         session.add(run)
@@ -166,6 +169,7 @@ async def get_result(query_id: UUID, user: AuthenticatedUser) -> dict:
         return {
             "queryId": str(run.id),
             "status": run.status,
+            "asOf": run.as_of.isoformat() if run.as_of else None,
             "answer": answer,
             "claims": claims,
             "citations": citations,

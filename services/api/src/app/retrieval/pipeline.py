@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import UUID, uuid5
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +32,7 @@ from app.domain.types import (
     AccessOutcome,
     AuthorisedEvidence,
     CandidateRef,
+    CompiledContext,
     GeneratedAnswer,
     QueryStatus,
     RerankedEvidence,
@@ -44,6 +45,7 @@ from app.observability.metrics import QUERY_LATENCY
 from app.persistence.models import (
     AccessDecision,
     Chunk,
+    EvidenceCapsule,
     EvidenceItem,
     ObjectVersion,
     QueryRun,
@@ -53,6 +55,7 @@ from app.persistence.session import get_session_factory, set_tenant_context
 from app.retrieval.context import compile_context
 from app.retrieval.rerank import rerank_authorised_evidence
 from app.retrieval.rrf import fuse_candidates
+from app.retrieval.temporal import active_at
 from app.retrieval.underfill import lexical_search_with_fallback, vector_search_with_fallback
 from app.retrieval.verify import build_extractive_fallback, verify_answer
 from app.settings import get_settings
@@ -60,14 +63,25 @@ from app.settings import get_settings
 logger = get_logger(__name__)
 
 
-async def _decrypt_query(session: AsyncSession, query_id: UUID) -> str:
+async def _decrypt_query(session: AsyncSession, query_id: UUID, user_id: UUID) -> str:
     run = (
-        await session.execute(select(QueryRun).where(QueryRun.id == query_id))
+        await session.execute(
+            select(QueryRun).where(
+                QueryRun.id == query_id,
+                QueryRun.user_id == user_id,
+            )
+        )
     ).scalar_one_or_none()
     if run is None:
         raise ValueError(f"Query run {query_id} not found")
     cm = get_credential_manager()
     return cm.decrypt_bytes(EncryptedPayload(ciphertext=run.query_ciphertext)).decode("utf-8")
+
+
+async def _load_as_of(session: AsyncSession, query_id: UUID) -> datetime | None:
+    return (
+        await session.execute(select(QueryRun.as_of).where(QueryRun.id == query_id))
+    ).scalar_one_or_none()
 
 
 async def _update_status(session: AsyncSession, query_id: UUID, status: str) -> None:
@@ -80,8 +94,10 @@ async def _update_status(session: AsyncSession, query_id: UUID, status: str) -> 
 
 async def _load_authorised_text(
     session: AsyncSession,
+    query_id: UUID,
     candidates: list[CandidateRef],
     authorised_object_ids: set[UUID],
+    as_of: datetime | None = None,
 ) -> list[AuthorisedEvidence]:
     if not candidates:
         return []
@@ -97,50 +113,63 @@ async def _load_authorised_text(
             Chunk.object_version_id,
             ObjectVersion.source_revision,
             ObjectVersion.normalised_title,
+            ObjectVersion.content_hash,
+            ObjectVersion.observed_at,
+            ObjectVersion.valid_from,
             SourceObject.id,
             SourceObject.source,
             SourceObject.canonical_url,
         )
         .join(ObjectVersion, Chunk.object_version_id == ObjectVersion.id)
         .join(SourceObject, ObjectVersion.source_object_id == SourceObject.id)
-        .where(Chunk.id.in_(chunk_ids))
+        .where(
+            Chunk.id.in_(chunk_ids),
+            *([active_at(ObjectVersion, as_of)] if as_of else []),
+        )
     )
     rows = (await session.execute(stmt)).all()
 
+    selected_versions: dict[UUID, tuple[UUID, tuple[float, float, str]]] = {}
+    for row in rows:
+        object_id = row[8]
+        version_rank = (
+            row[6].timestamp(),
+            row[7].timestamp() if row[7] else float("-inf"),
+            row[3],
+        )
+        current = selected_versions.get(object_id)
+        if current is None or version_rank > current[1]:
+            selected_versions[object_id] = (row[2], version_rank)
+
     evidence_list: list[AuthorisedEvidence] = []
     for row in rows:
+        if selected_versions[row[8]][0] != row[2]:
+            continue
         fused_score = next(
             (c.fused_score for c in authorised_candidates if c.chunk_id == row[0]), 0.0
         )
         evidence_list.append(
             AuthorisedEvidence(
-                evidence_id=uuid4(),
+                evidence_id=uuid5(query_id, str(row[0])),
                 chunk_id=row[0],
+                object_version_id=row[2],
                 text=row[1],
-                source_object_id=row[5],
-                source=Source(row[6]),
+                source_object_id=row[8],
+                source=Source(row[9]),
                 source_revision=row[3] or "",
+                content_hash=row[5],
                 title=row[4],
-                canonical_url=row[7],
+                canonical_url=row[10],
                 fused_score=fused_score,
             )
         )
 
-    by_object: dict[UUID, list[AuthorisedEvidence]] = {}
-    for ev in evidence_list:
-        by_object.setdefault(ev.source_object_id, []).append(ev)
-    deduped: list[AuthorisedEvidence] = []
-    for evs in by_object.values():
-        if len(evs) > 1:
-            evs.sort(key=lambda e: e.source_revision, reverse=True)
-            deduped.append(evs[0])
-        else:
-            deduped.extend(evs)
-
     logger.info(
-        "Authorised text loaded", candidate_count=len(candidates), evidence_count=len(deduped)
+        "Authorised text loaded",
+        candidate_count=len(candidates),
+        evidence_count=len(evidence_list),
     )
-    return deduped
+    return evidence_list
 
 
 async def _audit_commit(
@@ -153,6 +182,7 @@ async def _audit_commit(
     object_source_map: dict[UUID, Source],
     status: str,
     partial_sources: list[str] | None = None,
+    compiled_context: CompiledContext | None = None,
 ) -> None:
     cm = get_credential_manager()
     settings = get_settings()
@@ -162,17 +192,43 @@ async def _audit_commit(
         await session.execute(select(QueryRun).where(QueryRun.id == query_id))
     ).scalar_one_or_none()
     if run is not None:
+        if compiled_context is None:
+            compiled_context = compile_context(
+                [],
+                requester=str(run.user_id),
+                as_of=run.as_of,
+            )
         run.status = status
         run.answer_ciphertext = encrypted_answer.ciphertext
         run.completed_at = datetime.now(UTC)
         run.latency_ms = int((datetime.now(UTC) - run.started_at).total_seconds() * 1000)
         run.model_version = settings.GENERATION_MODEL
+        run.embedding_version = settings.EMBEDDING_MODEL
         run.prompt_version = "answer_v1"
+        run.policy_version = compiled_context.policy_version
         run.retriever_version = "rrf_v1"
         run.reranker_version = "deterministic-authority-v1"
         run.context_policy_version = "xml_v1"
+        run.context_compiler_version = compiled_context.context_compiler_version
+        run.authorised_context_hash = compiled_context.snapshot_hash
         if partial_sources:
             run.partial_sources = partial_sources
+
+        session.add(
+            EvidenceCapsule(
+                tenant_id=tenant_id,
+                query_id=query_id,
+                snapshot_hash=compiled_context.snapshot_hash,
+                context_manifest={
+                    "requester": compiled_context.requester,
+                    "asOf": compiled_context.as_of.isoformat() if compiled_context.as_of else None,
+                    "policyVersion": compiled_context.policy_version,
+                    "contextCompilerVersion": compiled_context.context_compiler_version,
+                    "allowedEvidence": compiled_context.evidence_manifest,
+                },
+                answer_ciphertext=encrypted_answer.ciphertext,
+            )
+        )
 
     for source_object_id, decision_result in access_decisions.items():
         source = object_source_map.get(source_object_id)
@@ -197,15 +253,18 @@ async def _audit_commit(
         quoted_span_encrypted = cm.encrypt_bytes(ev.text.encode("utf-8"))
         session.add(
             EvidenceItem(
+                id=ev.evidence_id,
                 query_id=query_id,
                 tenant_id=tenant_id,
                 chunk_id=ev.chunk_id,
+                object_version_id=ev.object_version_id,
                 source_object_id=ev.source_object_id,
                 source_revision=ev.source_revision,
                 source=ev.source.value,
                 title_snapshot=ev.title,
                 canonical_url=ev.canonical_url,
                 quoted_span_ciphertext=quoted_span_encrypted.ciphertext,
+                content_hash=ev.content_hash,
                 rank=reranked_ev.rank,
                 retrieval_score=ev.fused_score,
                 rerank_score=reranked_ev.rerank_score,
@@ -222,6 +281,9 @@ async def _audit_commit(
             "evidence_count": len(reranked),
             "access_decision_count": len(access_decisions),
             "partial_sources": partial_sources or [],
+            "authorised_context_hash": (
+                compiled_context.snapshot_hash if compiled_context else None
+            ),
         },
         query_id=query_id,
     )
@@ -257,6 +319,7 @@ async def _audit_terminal_result(
             object_source_map=object_source_map or {},
             status=status,
             partial_sources=partial_sources,
+            compiled_context=None,
         )
         await session.commit()
 
@@ -271,7 +334,8 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
     try:
         async with factory() as session:
             await set_tenant_context(session, user.tenant_id)
-            query_text = await _decrypt_query(session, query_id)
+            query_text = await _decrypt_query(session, query_id, user.user_id)
+            as_of = await _load_as_of(session, query_id)
             await _update_status(session, query_id, QueryStatus.AUTHENTICATED.value)
             await session.commit()
 
@@ -282,10 +346,18 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
         async with factory() as session:
             await set_tenant_context(session, user.tenant_id)
             vector_hits = await vector_search_with_fallback(
-                session, user.tenant_id, embedding, settings.CANDIDATE_TOP_K
+                session,
+                user.tenant_id,
+                embedding,
+                settings.CANDIDATE_TOP_K,
+                as_of,
             )
             lexical_hits = await lexical_search_with_fallback(
-                session, user.tenant_id, query_text, settings.CANDIDATE_TOP_K
+                session,
+                user.tenant_id,
+                query_text,
+                settings.CANDIDATE_TOP_K,
+                as_of,
             )
             await _update_status(session, query_id, QueryStatus.CANDIDATES.value)
             await session.commit()
@@ -312,7 +384,12 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
                 if c.source_object_id not in seen_objects:
                     acl_candidates.append((c.source_object_id, c.source))
                     seen_objects.add(c.source_object_id)
-            local_verdicts = await batch_check_local_acl(session, user.user_id, acl_candidates)
+            local_verdicts = await batch_check_local_acl(
+                session,
+                user.user_id,
+                acl_candidates,
+                as_of,
+            )
 
         local_denied = {
             obj_id for obj_id, v in local_verdicts.items() if v.outcome == AccessOutcome.DENY
@@ -385,7 +462,11 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
         async with factory() as session:
             await set_tenant_context(session, user.tenant_id)
             evidence_list = await _load_authorised_text(
-                session, candidates_after_local, authorised_object_ids
+                session,
+                query_id,
+                candidates_after_local,
+                authorised_object_ids,
+                as_of,
             )
             await _update_status(session, query_id, QueryStatus.REAUTHORISED.value)
             await session.commit()
@@ -409,7 +490,12 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
             await session.commit()
 
         context_evidence = [r.evidence for r in reranked]
-        compiled_context = compile_context(context_evidence, query_text=query_text)
+        compiled_context = compile_context(
+            context_evidence,
+            query_text=query_text,
+            requester=user.oidc_subject,
+            as_of=as_of,
+        )
 
         async with factory() as session:
             await set_tenant_context(session, user.tenant_id)
@@ -471,6 +557,7 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
                 object_source_map=all_object_source_map,
                 status=final_status,
                 partial_sources=list(partial_sources) if partial_sources else None,
+                compiled_context=compiled_context,
             )
             await session.commit()
 

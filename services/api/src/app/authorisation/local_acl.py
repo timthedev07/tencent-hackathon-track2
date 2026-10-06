@@ -7,6 +7,7 @@ Ambiguous local ACL: may proceed to live check if safe, otherwise deny.
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -16,6 +17,7 @@ from app.auth.identities import find_identity_link
 from app.domain.types import AccessOutcome, Source
 from app.observability.logging import get_logger
 from app.persistence.models import AclGrant, IdentityLink, Principal, SourceConnection
+from app.retrieval.temporal import active_at, active_now
 
 logger = get_logger(__name__)
 
@@ -35,11 +37,13 @@ async def check_local_acl(
     user_id: UUID,
     source: Source,
     source_object_id: UUID,
+    as_of: datetime | None = None,
 ) -> LocalAclVerdict:
-    link = await find_identity_link(session, user_id, source)
+    link = await find_identity_link(session, user_id, source, as_of)
     if link is None:
         return LocalAclVerdict(AccessOutcome.DENY, "identity_link_missing")
 
+    grant_filter = active_at(AclGrant, as_of) if as_of else active_now(AclGrant)
     stmt = (
         select(AclGrant)
         .join(Principal, AclGrant.principal_id == Principal.id)
@@ -52,6 +56,7 @@ async def check_local_acl(
             AclGrant.grant_effect == "allow",
             SourceConnection.source == source.value,
             Principal.provider_principal_id == link.provider_subject_id,
+            grant_filter,
         )
         .limit(1)
     )
@@ -71,6 +76,7 @@ async def check_local_acl(
             AclGrant.grant_effect == "deny",
             SourceConnection.source == source.value,
             Principal.provider_principal_id == link.provider_subject_id,
+            grant_filter,
         )
         .limit(1)
     )
@@ -85,12 +91,13 @@ async def batch_check_local_acl(
     session: AsyncSession,
     user_id: UUID,
     candidates: list[tuple[UUID, Source]],
+    as_of: datetime | None = None,
 ) -> dict[UUID, LocalAclVerdict]:
     sources: set[Source] = {src for _, src in candidates}
     identity_links: dict[Source, IdentityLink | None] = {}
 
     for src in sources:
-        identity_links[src] = await find_identity_link(session, user_id, src)
+        identity_links[src] = await find_identity_link(session, user_id, src, as_of)
 
     results: dict[UUID, LocalAclVerdict] = {}
 
@@ -100,6 +107,7 @@ async def batch_check_local_acl(
             results[source_object_id] = LocalAclVerdict(AccessOutcome.DENY, "identity_link_missing")
             continue
 
+        grant_filter = active_at(AclGrant, as_of) if as_of else active_now(AclGrant)
         allow_stmt = (
             select(AclGrant)
             .join(Principal, AclGrant.principal_id == Principal.id)
@@ -112,6 +120,7 @@ async def batch_check_local_acl(
                 AclGrant.grant_effect == "allow",
                 SourceConnection.source == source.value,
                 Principal.provider_principal_id == link.provider_subject_id,
+                grant_filter,
             )
             .limit(1)
         )
@@ -132,6 +141,7 @@ async def batch_check_local_acl(
                 AclGrant.grant_effect == "deny",
                 SourceConnection.source == source.value,
                 Principal.provider_principal_id == link.provider_subject_id,
+                grant_filter,
             )
             .limit(1)
         )
