@@ -597,9 +597,12 @@ def upgrade() -> None:
     for table in tenant_tables:
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
+        # USING filters SELECT/UPDATE/DELETE; WITH CHECK gates INSERT/UPDATE.
+        # Without WITH CHECK, RLS silently drops every INSERT (0 rows).
         op.execute(
             f"CREATE POLICY tenant_isolation_{table} ON {table} "
-            f"USING (tenant_id = current_setting('app.tenant_id', true)::uuid)"
+            f"USING (tenant_id = current_setting('app.tenant_id', true)::uuid) "
+            f"WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid)"
         )
 
     # ── Revoke UPDATE/DELETE on audit_events from application role ─
