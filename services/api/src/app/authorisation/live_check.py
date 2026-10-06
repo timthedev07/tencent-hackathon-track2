@@ -27,7 +27,12 @@ from app.domain.types import (
     Source,
 )
 from app.observability.logging import get_logger
-from app.persistence.models import AccessDecision, EncryptedCredential, SourceObject
+from app.persistence.models import (
+    AccessDecision,
+    EncryptedCredential,
+    SourceConnection,
+    SourceObject,
+)
 from app.settings import get_settings
 
 logger = get_logger(__name__)
@@ -48,17 +53,21 @@ async def _resolve_delegated_credential(
     if link is None:
         return None
     stmt = (
-        select(EncryptedCredential)
+        select(EncryptedCredential, SourceConnection)
+        .join(SourceConnection, EncryptedCredential.source_connection_id == SourceConnection.id)
         .where(
             EncryptedCredential.source_connection_id == link.source_connection_id,
             EncryptedCredential.user_id == user.user_id,
+            SourceConnection.status == "connected",
         )
+        .order_by(EncryptedCredential.updated_at.desc())
         .limit(1)
     )
     result = await session.execute(stmt)
-    cred = result.scalar_one_or_none()
-    if cred is None:
+    row = result.first()
+    if row is None:
         return None
+    cred, connection = row
     cm = get_credential_manager()
     try:
         plaintext = cm.decrypt(
@@ -67,7 +76,47 @@ async def _resolve_delegated_credential(
     except Exception:
         logger.debug("Credential decryption failed", exc_info=True)
         return None
-    return DelegatedCredential(source=source, access_token=plaintext, expires_at=cred.expires_at)
+    from app.connectors.oauth import refresh_access_token, unpack_tokens
+
+    token_data = unpack_tokens(plaintext)
+    access_token = str(token_data.get("access_token") or "")
+    refresh_token = token_data.get("refresh_token")
+    if (
+        cred.credential_type == "oauth_refresh"
+        and token_data.get("refresh_token") is None
+        and not plaintext.lstrip().startswith("{")
+    ):
+        access_token = ""
+        refresh_token = plaintext
+    expires_at = cred.expires_at
+    payload_expires_at = token_data.get("expires_at")
+    if isinstance(payload_expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(payload_expires_at)
+        except ValueError:
+            expires_at = cred.expires_at
+    if (not access_token or (expires_at and expires_at <= datetime.now(UTC))) and refresh_token:
+        try:
+            refreshed = await refresh_access_token(source, str(refresh_token))
+        except ValueError:
+            return None
+        access_token = refreshed["access_token"]
+        refresh_token = refreshed.get("refresh_token")
+        expires_at = refreshed.get("expires_at")
+        # This request-scoped check never commits unrelated state.
+    if not access_token:
+        return None
+    return DelegatedCredential(
+        source=source,
+        access_token=access_token,
+        refresh_token=str(refresh_token) if refresh_token else None,
+        expires_at=expires_at,
+        provider_metadata={
+            "workspace_id": connection.external_workspace_id,
+            "cloud_id": connection.external_workspace_id,
+            "provider_subject_id": link.provider_subject_id,
+        },
+    )
 
 
 async def _get_connector(source: Source) -> Connector | None:
@@ -95,7 +144,7 @@ async def _get_connector(source: Source) -> Connector | None:
     return None
 
 
-async def check_live_access(
+async def check_live_access(  # noqa: PLR0911
     session: AsyncSession,
     user: AuthenticatedUser,
     source: Source,
@@ -106,6 +155,11 @@ async def check_live_access(
     credential = await _resolve_delegated_credential(session, user, source)
     if credential is None:
         return AccessCheckResult(outcome=AccessOutcome.DENY, reason_code="no_delegated_credential")
+    if credential.expires_at is not None and credential.expires_at <= datetime.now(UTC):
+        return AccessCheckResult(
+            outcome=AccessOutcome.EXPIRED_CREDENTIAL,
+            reason_code="credential_expired",
+        )
 
     obj_stmt = select(SourceObject.external_object_id).where(SourceObject.id == source_object_id)
     external_object_id = (await session.execute(obj_stmt)).scalar_one_or_none()
@@ -211,6 +265,11 @@ async def _check_single(
     deadline_ms: int,
 ) -> tuple[UUID, AccessCheckResult]:
     settings = get_settings()
+    if credential.expires_at is not None and credential.expires_at <= datetime.now(UTC):
+        return source_object_id, AccessCheckResult(
+            outcome=AccessOutcome.EXPIRED_CREDENTIAL,
+            reason_code="credential_expired",
+        )
     subdeadline = min(deadline_ms, settings.QUERY_AUTH_DEADLINE_MS)
     connector = await _get_connector(source)
     if connector is None:

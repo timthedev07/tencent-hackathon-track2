@@ -30,6 +30,7 @@ class Connector(Protocol):
         self,
         connection: SourceConnection,
         cursor: str | None,
+        credential: DelegatedCredential | None = None,
     ) -> ScanPage:
         """Perform an initial full scan of all accessible objects."""
         ...
@@ -38,6 +39,7 @@ class Connector(Protocol):
         self,
         connection: SourceConnection,
         cursor: str | None,
+        credential: DelegatedCredential | None = None,
     ) -> ChangePage:
         """Read incremental changes since the cursor position."""
         ...
@@ -46,6 +48,7 @@ class Connector(Protocol):
         self,
         connection: SourceConnection,
         external_object_id: str,
+        credential: DelegatedCredential | None = None,
     ) -> FetchObjectResult:
         """Fetch a single object's content and metadata."""
         ...
@@ -54,6 +57,7 @@ class Connector(Protocol):
         self,
         connection: SourceConnection,
         external_object_id: str,
+        credential: DelegatedCredential | None = None,
     ) -> FetchAclResult:
         """Fetch ACL grants for a single object."""
         ...
