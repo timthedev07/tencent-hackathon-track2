@@ -1,7 +1,7 @@
 """OAuth callback routes for source identity linking.
 
 GET  /v1/oauth/atlassian/start   — returns authorisation URL (requires Bearer token)
-GET  /v1/oauth/atlassian/callback — handles provider redirect, persists tokens, redirects to frontend
+GET  /v1/oauth/atlassian/callback — handles provider redirect and persists tokens
 GET  /v1/oauth/slack/start
 GET  /v1/oauth/slack/callback
 GET  /v1/oauth/google/start
@@ -12,7 +12,7 @@ The OAuth flow works as follows:
 1. Frontend calls /start with a Bearer token → gets an authoriseUrl
 2. Browser navigates to authoriseUrl → user grants access on provider site
 3. Provider redirects browser to /callback?code=...&state=...
-   - state encodes the user's dev token so the callback can authenticate
+   - state is a short-lived signed binding for the tenant and user
 4. API exchanges code for tokens, persists to DB
 5. API redirects browser back to frontend /settings?status=connected&source=...
 """
@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_authenticated_user
 from app.auth.identities import find_identity_link
+from app.auth.oauth_state import create_oauth_state, verify_oauth_state
 from app.auth.oidc import AuthenticatedUser
 from app.domain.types import Source
 from app.observability.logging import get_logger
@@ -61,7 +62,7 @@ async def list_connections(
     session: AsyncSession = Depends(get_session),
 ) -> ConnectionsResponse:
     """List the current user's connection status for all sources."""
-    sources = [Source.CONFLUENCE, Source.SLACK, Source.GOOGLE_DRIVE]
+    sources = [Source.CONFLUENCE, Source.JIRA, Source.SLACK, Source.GOOGLE_DRIVE]
     result_list: list[ConnectionStatus] = []
 
     for source in sources:
@@ -99,7 +100,7 @@ async def start_atlassian_oauth(
     """Initiate Atlassian OAuth flow for source identity linking."""
     from app.connectors.confluence import start_atlassian_oauth as start
 
-    oauth_state = _extract_token(authorization)
+    oauth_state = create_oauth_state(user.user_id, user.tenant_id)
     url = await start(user, oauth_state=oauth_state)
     return OAuthStartResponse(authoriseUrl=url)
 
@@ -117,7 +118,7 @@ async def atlassian_callback(
         await complete_atlassian_oauth(code, state, user)
     except Exception as exc:
         logger.warning("Atlassian OAuth callback failed", error=str(exc))
-        return _redirect_to_settings("error", "atlassian", str(exc))
+        return _redirect_to_settings("error", "atlassian", "OAuth connection failed")
 
     return _redirect_to_settings("connected", "atlassian")
 
@@ -133,7 +134,7 @@ async def start_slack_oauth(
     """Initiate Slack OAuth flow."""
     from app.connectors.slack import start_slack_oauth as start
 
-    oauth_state = _extract_token(authorization)
+    oauth_state = create_oauth_state(user.user_id, user.tenant_id)
     url = await start(user, oauth_state=oauth_state)
     return OAuthStartResponse(authoriseUrl=url)
 
@@ -151,7 +152,7 @@ async def slack_callback(
         await complete_slack_oauth(code, state, user)
     except Exception as exc:
         logger.warning("Slack OAuth callback failed", error=str(exc))
-        return _redirect_to_settings("error", "slack", str(exc))
+        return _redirect_to_settings("error", "slack", "OAuth connection failed")
 
     return _redirect_to_settings("connected", "slack")
 
@@ -167,7 +168,7 @@ async def start_google_oauth(
     """Initiate Google OAuth flow."""
     from app.connectors.google_drive import start_google_oauth as start
 
-    oauth_state = _extract_token(authorization)
+    oauth_state = create_oauth_state(user.user_id, user.tenant_id)
     url = await start(user, oauth_state=oauth_state)
     return OAuthStartResponse(authoriseUrl=url)
 
@@ -185,7 +186,7 @@ async def google_callback(
         await complete_google_oauth(code, state, user)
     except Exception as exc:
         logger.warning("Google OAuth callback failed", error=str(exc))
-        return _redirect_to_settings("error", "google", str(exc))
+        return _redirect_to_settings("error", "google", "OAuth connection failed")
 
     return _redirect_to_settings("connected", "google")
 
@@ -196,25 +197,44 @@ async def google_callback(
 async def _resolve_user_from_state(state: str) -> AuthenticatedUser:
     """Resolve the user from the OAuth state parameter.
 
-    In dev mode, state is the dev token (e.g. 'dev-alice').
-    In production, state would be a signed session reference.
+    The state is a short-lived signed binding containing only internal IDs.
+    It is never a bearer token and cannot be used as an API credential.
     """
-    settings = get_settings()
+    try:
+        tenant_id, user_id = verify_oauth_state(state)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": {"code": "AUTH_INVALID_TOKEN", "message": "Invalid OAuth state"}},
+        ) from exc
 
-    if settings.is_development and state.startswith("dev-"):
-        from app.auth.oidc import resolve_user, validate_token
-        from app.persistence.session import get_session_factory
+    from app.persistence.models import Tenant, User
+    from app.persistence.session import get_session_factory, set_tenant_context
 
-        claims = await validate_token(state)
-        factory = get_session_factory()
-        async with factory() as session:
-            user = await resolve_user(session, claims)
-            return user
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail={"error": {"code": "AUTH_INVALID_TOKEN", "message": "Invalid OAuth state"}},
-    )
+    factory = get_session_factory()
+    async with factory() as session:
+        await set_tenant_context(session, tenant_id)
+        row = (
+            await session.execute(
+                select(User, Tenant).join(Tenant, User.tenant_id == Tenant.id).where(
+                    User.id == user_id, User.tenant_id == tenant_id
+                )
+            )
+        ).first()
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": {"code": "AUTH_INVALID_TOKEN", "message": "Invalid OAuth state"}},
+            )
+        user, _tenant = row
+        return AuthenticatedUser(
+            user_id=user.id,
+            tenant_id=user.tenant_id,
+            oidc_subject=user.oidc_subject,
+            display_name=user.display_name,
+            email=user.email,
+            is_compliance_user=user.is_compliance_user,
+        )
 
 
 def _redirect_to_settings(
@@ -228,10 +248,3 @@ def _redirect_to_settings(
         import urllib.parse
         params += f"&error={urllib.parse.quote(error)}"
     return RedirectResponse(url=f"{base}/settings{params}")
-
-
-def _extract_token(authorization: str | None) -> str:
-    """Extract the raw Bearer token from the Authorization header."""
-    if not authorization or not authorization.startswith("Bearer "):
-        return ""
-    return authorization.removeprefix("Bearer ").strip()

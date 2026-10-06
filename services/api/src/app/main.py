@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 from app.api.routes.audit import router as audit_router
 from app.api.routes.dev_auth import router as dev_auth_router
@@ -18,6 +20,7 @@ from app.api.routes.webhooks import router as webhooks_router
 from app.observability.logging import configure_logging, get_logger
 from app.observability.metrics import MetricsMiddleware, metrics_app
 from app.observability.tracing import configure_tracing, instrument_app
+from app.settings import get_settings
 
 logger = get_logger(__name__)
 
@@ -26,6 +29,7 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[arg-type]
     """Application startup and shutdown."""
     configure_logging()
+    get_settings().validate_for_startup()
     try:
         configure_tracing()
         instrument_app(app)
@@ -43,10 +47,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    settings = get_settings()
+
     # ── CORS ──────────────────────────────────────────────────────
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000"],
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
@@ -54,6 +60,28 @@ def create_app() -> FastAPI:
 
     # ── Metrics ────────────────────────────────────────────────────
     app.add_middleware(MetricsMiddleware)
+
+    @app.middleware("http")
+    async def add_security_headers(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Apply browser hardening headers to every API response."""
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+        )
+        response.headers.setdefault(
+            "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"
+        )
+        if settings.is_production:
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
+        return response
 
     # ── Routes ─────────────────────────────────────────────────────
     app.include_router(health_router, prefix="/health", tags=["health"])

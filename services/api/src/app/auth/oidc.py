@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.observability.logging import get_logger
 from app.persistence.models import Tenant, User
+from app.persistence.session import set_tenant_context
 from app.settings import get_settings
 
 logger = get_logger(__name__)
@@ -50,6 +51,9 @@ async def _fetch_jwks() -> dict[str, Any]:
 
     settings = get_settings()
     if not settings.OIDC_JWKS_URL:
+        if settings.is_production:
+            logger.error("OIDC_JWKS_URL is required in production")
+            raise ValueError("AUTH_CONFIGURATION_ERROR")
         logger.warning("OIDC_JWKS_URL not configured — using dev fallback")
         # Dev fallback: return empty JWKS (tokens validated without signature in dev)
         return {"keys": []}
@@ -99,26 +103,20 @@ async def validate_token(token: str) -> dict[str, Any]:
         logger.warning("Token decode failed", error=str(exc))
         raise ValueError("AUTH_INVALID_TOKEN") from exc
 
-    # Check expiry
-    exp = unverified_claims.get("exp")
-    if exp is not None and exp < time.time():
-        logger.warning("Token expired", oidc_subject=unverified_claims.get("sub"))
+    if not unverified_claims.get("sub"):
         raise ValueError("AUTH_INVALID_TOKEN")
 
-    # Check issuer
-    if settings.OIDC_ISSUER and unverified_claims.get("iss") != settings.OIDC_ISSUER:
-        logger.warning("Token issuer mismatch")
-        raise ValueError("AUTH_INVALID_TOKEN")
-
-    # Check audience
-    if settings.OIDC_AUDIENCE and unverified_claims.get("aud") != settings.OIDC_AUDIENCE:
-        logger.warning("Token audience mismatch")
-        raise ValueError("AUTH_INVALID_TOKEN")
-
-    # Verify signature (skip in development if no JWKS available)
+    # A signed token is mandatory outside the explicit local development
+    # shortcut.  Never accept a decoded-but-unverified token in staging or
+    # production when the JWKS endpoint is unavailable.
     jwks = await _fetch_jwks()
     kid = unverified_header.get("kid")
 
+    if not settings.is_development and not jwks.get("keys"):
+        logger.error("OIDC JWKS is empty outside development")
+        raise ValueError("AUTH_CONFIGURATION_ERROR")
+
+    verified_claims = unverified_claims
     if jwks.get("keys"):
         signing_key = None
         for key in jwks["keys"]:
@@ -130,23 +128,19 @@ async def validate_token(token: str) -> dict[str, Any]:
             raise ValueError("AUTH_INVALID_TOKEN")
 
         try:
-            jwt.decode(
+            verified_claims = jwt.decode(
                 token,
                 signing_key,
                 algorithms=["RS256"],
                 audience=settings.OIDC_AUDIENCE,
                 issuer=settings.OIDC_ISSUER,
+                options={"require": ["exp", "sub", "iss", "aud"]},
             )
         except jwt.PyJWTError as exc:
             logger.warning("Token signature verification failed", error=str(exc))
             raise ValueError("AUTH_INVALID_TOKEN") from exc
 
-    # Subject must be present
-    if not unverified_claims.get("sub"):
-        logger.warning("Token missing subject claim")
-        raise ValueError("AUTH_INVALID_TOKEN")
-
-    return unverified_claims
+    return verified_claims
 
 
 async def resolve_user(session: AsyncSession, claims: dict[str, Any]) -> AuthenticatedUser:
@@ -155,12 +149,41 @@ async def resolve_user(session: AsyncSession, claims: dict[str, Any]) -> Authent
     Never trusts tenant_id from client input.
     """
     oidc_subject = claims["sub"]
+    settings = get_settings()
 
-    # Server-side resolution: find user by OIDC subject
+    # Resolve the tenant before touching tenant-scoped tables.  A subject is
+    # only unique within an enterprise tenant, so a global subject lookup is
+    # both ambiguous and incompatible with FORCE ROW LEVEL SECURITY.
+    tenant_claim = claims.get(settings.OIDC_TENANT_CLAIM)
+    if isinstance(tenant_claim, list):
+        tenant_claim = tenant_claim[0] if len(tenant_claim) == 1 else None
+    tenant: Tenant | None = None
+    if tenant_claim:
+        tenant_result = await session.execute(
+            select(Tenant).where(Tenant.external_org_key == str(tenant_claim))
+        )
+        tenant = tenant_result.scalar_one_or_none()
+        if tenant is None:
+            raise ValueError("AUTH_TENANT_NOT_RESOLVED")
+    elif not settings.is_development:
+        raise ValueError("AUTH_TENANT_NOT_RESOLVED")
+    else:
+        dev_tenant_result = await session.execute(
+            select(Tenant).where(Tenant.external_org_key == "dev-org")
+        )
+        tenant = dev_tenant_result.scalar_one_or_none()
+
+    if tenant is not None:
+        await set_tenant_context(session, tenant.id)
+
+    # Server-side resolution: find the subject within the resolved tenant.
+    user_filters = [User.oidc_subject == oidc_subject]
+    if tenant is not None:
+        user_filters.append(User.tenant_id == tenant.id)
     stmt = (
         select(User, Tenant)
         .join(Tenant, User.tenant_id == Tenant.id)
-        .where(User.oidc_subject == oidc_subject)
+        .where(*user_filters)
         .limit(1)
     )
     result = await session.execute(stmt)
@@ -169,12 +192,13 @@ async def resolve_user(session: AsyncSession, claims: dict[str, Any]) -> Authent
     # ── Dev-mode auto-provision ─────────────────────────────────
     # In development, if the user doesn't exist, auto-create a dev
     # tenant + user so the app works without Keycloak.
-    if row is None and get_settings().is_development:
+    if row is None and settings.is_development:
         # Check if a dev tenant already exists
-        dev_tenant = await session.execute(
-            select(Tenant).where(Tenant.external_org_key == "dev-org")
-        )
-        tenant = dev_tenant.scalar_one_or_none()
+        if tenant is None:
+            dev_tenant = await session.execute(
+                select(Tenant).where(Tenant.external_org_key == "dev-org")
+            )
+            tenant = dev_tenant.scalar_one_or_none()
         if tenant is None:
             tenant = Tenant(
                 external_org_key="dev-org",
@@ -182,6 +206,8 @@ async def resolve_user(session: AsyncSession, claims: dict[str, Any]) -> Authent
             )
             session.add(tenant)
             await session.flush()
+        assert tenant is not None
+        await set_tenant_context(session, tenant.id)
 
         user = User(
             tenant_id=tenant.id,
@@ -195,8 +221,8 @@ async def resolve_user(session: AsyncSession, claims: dict[str, Any]) -> Authent
         logger.info("Auto-provisioned dev user", oidc_subject=oidc_subject)
 
         return AuthenticatedUser(
-            user_id=user.id,
-            tenant_id=tenant.id,
+            user_id=UUID(str(user.id)),
+            tenant_id=UUID(str(tenant.id)),
             oidc_subject=oidc_subject,
             display_name=user.display_name,
             email=user.email,
@@ -208,13 +234,10 @@ async def resolve_user(session: AsyncSession, claims: dict[str, Any]) -> Authent
         raise ValueError("AUTH_TENANT_NOT_RESOLVED")
 
     user, tenant = row
-    await session.execute(
-        select(1).where(Tenant.id == tenant.id)  # Set RLS context
-    )
-
+    assert tenant is not None
     return AuthenticatedUser(
-        user_id=user.id,
-        tenant_id=tenant.id,
+        user_id=UUID(str(user.id)),
+        tenant_id=UUID(str(tenant.id)),
         oidc_subject=user.oidc_subject,
         display_name=user.display_name,
         email=user.email,
