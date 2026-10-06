@@ -15,6 +15,8 @@ Queues by priority (1 = highest):
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from app.settings import get_settings
 from celery import Celery
 from kombu import Queue
@@ -53,6 +55,15 @@ celery_app.conf.update(
     task_soft_time_limit=240,
     task_acks_on_failure_or_timeout=False,
     redis_max_connections=50,
+    timezone="UTC",
+    enable_utc=True,
+    beat_schedule={
+        "provider-reconciliation": {
+            "task": "worker.tasks.reconcile.run_reconciliation",
+            "schedule": timedelta(minutes=settings.RECONCILIATION_INTERVAL_MINUTES),
+            "options": {"queue": "reconciliation"},
+        }
+    },
 )
 
 # ── Task routing ────────────────────────────────────────────────────

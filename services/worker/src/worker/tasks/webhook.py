@@ -20,28 +20,22 @@ def process_webhook_event(message: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _process_webhook_event(message: dict[str, Any]) -> dict[str, Any]:
+    from worker.tasks.ingestion_helpers import validate_message
+
+    validate_message(message)
     source = message.get("source", "unknown")
     delivery_id = message.get("deliveryId", "")
-    safe_metadata = message.get("safeMetadata", {})
-
     logger.info(
         "Processing webhook event",
         source=source,
         delivery_id=delivery_id,
     )
 
-    # Determine event type and route to appropriate task
-    event_type = safe_metadata.get("event_type") or safe_metadata.get("change_type")
+    # Provider webhooks do not carry a trusted tenant identity.  Reconcile
+    # against every connected tenant and let the provider adapter resolve the
+    # authoritative object state with that tenant's delegated credential.
+    from worker.tasks.reconcile import run_reconciliation
 
-    if event_type in ("deleted", "removed"):
-        # Priority: deletions queue
-        from worker.tasks.deletions import process_deletion
-
-        process_deletion.delay(message)  # type: ignore[union-attr]
-    else:
-        # Standard ingestion: fetch → normalise → ACL → chunk → embed
-        from worker.tasks.fetch import fetch_source_object
-
-        fetch_source_object.delay(message)  # type: ignore[union-attr]
+    run_reconciliation.delay(str(source))  # type: ignore[union-attr]
 
     return {"status": "routed", "source": source, "delivery_id": delivery_id}

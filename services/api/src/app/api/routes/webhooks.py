@@ -69,7 +69,18 @@ async def handle_webhook(
         await _verify_google_signature(body, request)
 
     # Parse and extract delivery ID
-    payload = await request.json() if body else {}
+    try:
+        payload = await request.json() if body else {}
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": {
+                    "code": "SOURCE_FETCH_FAILED",
+                    "message": "Webhook payload is malformed.",
+                }
+            },
+        ) from exc
 
     # Deduplicate and enqueue
     from app.domain.ingestion_service import handle_webhook_delivery
@@ -141,18 +152,22 @@ async def _verify_atlassian_signature(body: bytes, request: Request) -> None:
     """
     signature = request.headers.get("X-Hub-Signature") or request.headers.get("x-hub-signature")
     if not signature:
-        # If no shared secret is configured, accept without signature
-        # (this is the behaviour when webhooks are configured without a secret)
-        logger.warning("Atlassian webhook received without signature header")
-        return
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": {
+                    "code": "AUTH_INVALID_TOKEN",
+                    "message": "Missing webhook signature.",
+                }
+            },
+        )
 
     import hashlib
     import hmac
 
     settings = get_settings()
-    secret = settings.ATLASSIAN_CLIENT_SECRET
+    secret = settings.ATLASSIAN_WEBHOOK_SECRET
     if not secret:
-        logger.warning("Atlassian signing secret not configured")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
@@ -207,14 +222,17 @@ async def _verify_google_signature(body: bytes, request: Request) -> None:
             },
         )
 
-    # If a channel token was configured, verify it
-    # In production, this would be compared against stored channel tokens
     if channel_token is None:
-        logger.warning("Google Drive webhook received without channel token")
-        # Allow sync notifications (no token required for sync)
-        if resource_state == "sync":
-            return
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": {"code": "AUTH_INVALID_TOKEN", "message": "Missing channel token."}},
+        )
+
+    import hmac
+
+    expected_token = get_settings().GOOGLE_WEBHOOK_TOKEN
+    if not expected_token or not hmac.compare_digest(channel_token, expected_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": {"code": "AUTH_INVALID_TOKEN", "message": "Invalid channel token."}},
         )

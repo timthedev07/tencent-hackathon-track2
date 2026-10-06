@@ -340,6 +340,10 @@ class IngestionCursor(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
     )
 
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source_connection_id", "cursor_type"),
+    )
+
 
 class WebhookDelivery(Base):
     __tablename__ = "webhook_deliveries"
