@@ -10,7 +10,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.dependencies.auth import get_authenticated_user
@@ -22,7 +22,17 @@ router = APIRouter()
 class CreateQueryRequest(BaseModel):
     """Query creation request — must NOT contain tenant_id (INV-007)."""
 
+    model_config = ConfigDict(extra="forbid")
+
     query: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("query")
+    @classmethod
+    def normalise_query(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Query must contain non-whitespace text")
+        return cleaned
 
 
 class CreateQueryResponse(BaseModel):

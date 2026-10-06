@@ -185,6 +185,7 @@ class CompiledContext(BaseModel):
     evidence_blocks: list[AuthorisedEvidence]
     system_prompt: str
     total_token_count: int
+    query_text: str = ""
 
 
 # ── Connector result types ──────────────────────────────────────────

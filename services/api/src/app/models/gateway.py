@@ -6,12 +6,13 @@ Map provider responses into Pydantic domain objects at the gateway boundary.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from app.domain.types import (
     AuthorisedEvidence,
     CompiledContext,
     GeneratedAnswer,
+    GeneratedClaim,
     RerankedEvidence,
 )
 from app.observability.logging import get_logger
@@ -84,9 +85,24 @@ class StubModelGateway:
         authorised_context: CompiledContext,
         output_schema: type,  # type: ignore[type-arg]
     ) -> object:
-        """Return a stub answer."""
+        """Return a deterministic, citation-bearing development answer."""
+        if authorised_context.evidence_blocks:
+            evidence = authorised_context.evidence_blocks[0]
+            sentence = evidence.text.strip().split(". ", 1)[0].strip()
+            if sentence and not sentence.endswith((".", "!", "?")):
+                sentence += "."
+            fallback_answer = (
+                "The authorised evidence does not contain enough detail to answer this question."
+            )
+            return GeneratedAnswer(
+                answer=sentence
+                or fallback_answer,
+                claims=[GeneratedClaim(text=sentence, evidence_ids=[evidence.evidence_id])]
+                if sentence
+                else [],
+            )
         return GeneratedAnswer(
-            answer="This is a stub answer generated in development mode.",
+            answer="The authorised evidence is insufficient to answer this question.",
             claims=[],
         )
 
@@ -124,7 +140,11 @@ class HttpModelGateway:
             )
             response.raise_for_status()
             data = response.json()
-            return [item["embedding"] for item in data["data"]]
+            vectors = [item["embedding"] for item in data["data"]]
+            invalid = [len(vector) for vector in vectors if len(vector) != self.embedding_dimension]
+            if invalid:
+                raise ValueError("INGESTION_EMBED_FAILED: embedding dimension mismatch")
+            return vectors
 
     async def rerank(
         self,
@@ -145,7 +165,7 @@ class HttpModelGateway:
         """Call the generation API with structured output."""
         import httpx
 
-        evidence_text = ""
+        evidence_text = f"<question>\n{authorised_context.query_text}\n</question>\n\n"
         for ev in authorised_context.evidence_blocks:
             evi_id = f"evi_{str(ev.evidence_id).replace('-', '')[:12]}"
             evidence_text += (
@@ -166,13 +186,44 @@ class HttpModelGateway:
                         {"role": "user", "content": evidence_text},
                     ],
                     "temperature": 0.1,
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "generated_answer",
+                            "strict": True,
+                            "schema": output_schema.model_json_schema(),
+                        },
+                    },
                 },
                 timeout=self._settings.QUERY_GENERATION_DEADLINE_MS / 1000,
             )
             response.raise_for_status()
             data = response.json()
-            answer_text = data["choices"][0]["message"]["content"]
-            return GeneratedAnswer(answer=answer_text, claims=[])
+            content = data["choices"][0]["message"]["content"]
+            if not isinstance(content, str):
+                raise TypeError("MODEL_OUTPUT_INVALID")
+            schema_type: Any = output_schema
+            parsed: Any = schema_type.model_validate_json(content)
+            evidence_ids = {
+                f"evi_{str(evidence.evidence_id).replace('-', '')[:12]}": evidence.evidence_id
+                for evidence in authorised_context.evidence_blocks
+            }
+            mapped_claims: list[GeneratedClaim] = []
+            for claim in parsed.claims:
+                mapped_claims.append(
+                    GeneratedClaim(
+                        text=claim.text,
+                        evidence_ids=[
+                            evidence_ids[citation]
+                            for citation in claim.evidence_ids
+                            if citation in evidence_ids
+                        ],
+                    )
+                )
+            return GeneratedAnswer(
+                answer=parsed.answer,
+                claims=mapped_claims,
+            )
 
 
 _gateway: ModelGateway | None = None
@@ -183,10 +234,10 @@ def get_model_gateway() -> ModelGateway:
     global _gateway
     if _gateway is None:
         settings = get_settings()
-        if settings.APP_ENV == "development" and not settings.MODEL_API_KEY:
-            _gateway = StubModelGateway()
-        elif settings.MODEL_API_KEY:
+        if settings.MODEL_API_KEY:
             _gateway = HttpModelGateway()
-        else:
+        elif settings.is_development:
             _gateway = StubModelGateway()
+        else:
+            raise RuntimeError("MODEL_API_KEY is required outside development")
     return _gateway

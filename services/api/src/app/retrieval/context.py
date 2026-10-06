@@ -76,6 +76,7 @@ def _build_evidence_block(evidence: AuthorisedEvidence) -> str:
 def compile_context(
     evidence_list: list[AuthorisedEvidence],
     max_tokens: int | None = None,
+    query_text: str = "",
 ) -> CompiledContext:
     token_budget = max_tokens or (_MAX_CONTEXT_TOKENS - _SYSTEM_TOKEN_RESERVE)
     system_prompt = _SYSTEM_INSTRUCTIONS
@@ -108,4 +109,5 @@ def compile_context(
         evidence_blocks=evidence_blocks,
         system_prompt=system_prompt,
         total_token_count=system_tokens + used_tokens,
+        query_text=query_text,
     )

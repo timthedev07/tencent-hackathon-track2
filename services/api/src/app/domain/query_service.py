@@ -16,6 +16,7 @@ This is the heart of the system. It orchestrates:
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from uuid import UUID
 
@@ -102,6 +103,7 @@ async def get_result(query_id: UUID, user: AuthenticatedUser) -> dict:
         stmt = select(QueryRun).where(
             QueryRun.id == query_id,
             QueryRun.user_id == user.user_id,
+            QueryRun.tenant_id == user.tenant_id,
         )
         result = await session.execute(stmt)
         run = result.scalar_one_or_none()
@@ -118,10 +120,17 @@ async def get_result(query_id: UUID, user: AuthenticatedUser) -> dict:
 
         cm = get_credential_manager()
         answer = None
+        claims = []
         if run.answer_ciphertext:
-            answer = cm.decrypt_bytes(EncryptedPayload(ciphertext=run.answer_ciphertext)).decode(
-                "utf-8"
-            )
+            decrypted_answer = cm.decrypt_bytes(
+                EncryptedPayload(ciphertext=run.answer_ciphertext)
+            ).decode("utf-8")
+            try:
+                answer_payload = json.loads(decrypted_answer)
+                answer = answer_payload.get("answer", decrypted_answer)
+                claims = answer_payload.get("claims", [])
+            except json.JSONDecodeError:
+                answer = decrypted_answer
 
         # Load citations from evidence items
         from app.persistence.models import EvidenceItem
@@ -158,6 +167,7 @@ async def get_result(query_id: UUID, user: AuthenticatedUser) -> dict:
             "queryId": str(run.id),
             "status": run.status,
             "answer": answer,
+            "claims": claims,
             "citations": citations,
             "partialSourceWarnings": partial_warnings,
         }

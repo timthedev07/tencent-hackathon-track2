@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from uuid import UUID
-
 from pydantic import BaseModel, Field
 
 
@@ -11,7 +9,10 @@ class GeneratedClaim(BaseModel):
     """A single claim in a generated answer."""
 
     text: str
-    evidence_ids: list[UUID] = Field(default_factory=list)
+    # The model cites the short, human-readable ``evi_...`` identifiers in
+    # the prompt.  The gateway maps them back to internal UUIDs before the
+    # answer enters the domain verifier.
+    evidence_ids: list[str] = Field(default_factory=list)
 
 
 class GeneratedAnswer(BaseModel):

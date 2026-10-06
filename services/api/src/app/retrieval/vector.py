@@ -54,6 +54,9 @@ async def vector_search(
             SourceObject.tenant_id == tenant_id,
             SourceObject.is_queryable.is_(True),
             SourceObject.is_deleted.is_(False),
+            SourceObject.current_version_id == ObjectVersion.id,
+            ObjectVersion.ingestion_status == "active",
+            ObjectVersion.retired_at.is_(None),
             Chunk.embedding.isnot(None),
         )
         .order_by(distance.asc())

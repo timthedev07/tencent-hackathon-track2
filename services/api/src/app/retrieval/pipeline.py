@@ -155,6 +155,7 @@ async def _audit_commit(
     partial_sources: list[str] | None = None,
 ) -> None:
     cm = get_credential_manager()
+    settings = get_settings()
     encrypted_answer = cm.encrypt_bytes(answer.model_dump_json().encode("utf-8"))
 
     run = (
@@ -165,10 +166,10 @@ async def _audit_commit(
         run.answer_ciphertext = encrypted_answer.ciphertext
         run.completed_at = datetime.now(UTC)
         run.latency_ms = int((datetime.now(UTC) - run.started_at).total_seconds() * 1000)
-        run.model_version = "stub-v1"
+        run.model_version = settings.GENERATION_MODEL
         run.prompt_version = "answer_v1"
         run.retriever_version = "rrf_v1"
-        run.reranker_version = "authority_v1"
+        run.reranker_version = "deterministic-authority-v1"
         run.context_policy_version = "xml_v1"
         if partial_sources:
             run.partial_sources = partial_sources
@@ -226,6 +227,40 @@ async def _audit_commit(
     )
 
 
+def _terminal_answer(
+    message: str = "No authorised evidence was available for this query.",
+) -> GeneratedAnswer:
+    return GeneratedAnswer(answer=message, claims=[])
+
+
+async def _audit_terminal_result(
+    *,
+    query_id: UUID,
+    tenant_id: UUID,
+    answer: GeneratedAnswer,
+    status: str,
+    access_decisions: dict[UUID, AccessCheckResult] | None = None,
+    object_source_map: dict[UUID, Source] | None = None,
+    partial_sources: list[str] | None = None,
+    reranked: list[RerankedEvidence] | None = None,
+) -> None:
+    factory = get_session_factory()
+    async with factory() as session:
+        await set_tenant_context(session, tenant_id)
+        await _audit_commit(
+            session=session,
+            query_id=query_id,
+            tenant_id=tenant_id,
+            answer=answer,
+            reranked=reranked or [],
+            access_decisions=access_decisions or {},
+            object_source_map=object_source_map or {},
+            status=status,
+            partial_sources=partial_sources,
+        )
+        await session.commit()
+
+
 async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
     settings = get_settings()
     start_time = time.monotonic()
@@ -258,13 +293,15 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
         candidates = fuse_candidates(vector_hits, lexical_hits, settings.RRF_K)
 
         if not candidates:
-            async with factory() as session:
-                await set_tenant_context(session, user.tenant_id)
-                await _update_status(session, query_id, QueryStatus.DENIED.value)
-                await session.commit()
+            await _audit_terminal_result(
+                query_id=query_id,
+                tenant_id=user.tenant_id,
+                answer=_terminal_answer(),
+                status=QueryStatus.DENIED.value,
+            )
             return {"status": "denied", "query_id": str(query_id)}
 
-        from app.authorisation.live_check import check_live_access_batch, persist_access_decisions
+        from app.authorisation.live_check import check_live_access_batch
         from app.authorisation.local_acl import batch_check_local_acl
 
         async with factory() as session:
@@ -280,13 +317,23 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
         local_denied = {
             obj_id for obj_id, v in local_verdicts.items() if v.outcome == AccessOutcome.DENY
         }
+        local_denied_results = {
+            obj_id: AccessCheckResult(outcome=v.outcome, reason_code=v.reason)
+            for obj_id, v in local_verdicts.items()
+            if v.outcome == AccessOutcome.DENY
+        }
+        local_object_source_map = dict(acl_candidates)
         candidates_after_local = [c for c in candidates if c.source_object_id not in local_denied]
 
         if not candidates_after_local:
-            async with factory() as session:
-                await set_tenant_context(session, user.tenant_id)
-                await _update_status(session, query_id, QueryStatus.DENIED.value)
-                await session.commit()
+            await _audit_terminal_result(
+                query_id=query_id,
+                tenant_id=user.tenant_id,
+                answer=_terminal_answer(),
+                status=QueryStatus.DENIED.value,
+                access_decisions=local_denied_results,
+                object_source_map=local_object_source_map,
+            )
             return {"status": "denied", "query_id": str(query_id)}
 
         unique_objects: list[tuple[UUID, Source]] = []
@@ -312,19 +359,27 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
         for obj_id, result in access_results.items():
             if result.outcome == AccessOutcome.ALLOW:
                 authorised_object_ids.add(obj_id)
-            elif result.outcome == AccessOutcome.TIMEOUT:
+            elif result.outcome in {
+                AccessOutcome.TIMEOUT,
+                AccessOutcome.UNKNOWN,
+                AccessOutcome.EXPIRED_CREDENTIAL,
+            }:
                 source = object_source_map.get(obj_id)
                 if source:
                     partial_sources.add(source.value)
 
+        all_access_results = {**local_denied_results, **access_results}
+        all_object_source_map = {**local_object_source_map, **object_source_map}
+
         if not authorised_object_ids:
-            async with factory() as session:
-                await set_tenant_context(session, user.tenant_id)
-                await _update_status(session, query_id, QueryStatus.DENIED.value)
-                await persist_access_decisions(
-                    session, query_id, user.tenant_id, access_results, object_source_map
-                )
-                await session.commit()
+            await _audit_terminal_result(
+                query_id=query_id,
+                tenant_id=user.tenant_id,
+                answer=_terminal_answer(),
+                status=QueryStatus.DENIED.value,
+                access_decisions=all_access_results,
+                object_source_map=all_object_source_map,
+            )
             return {"status": "denied", "query_id": str(query_id)}
 
         async with factory() as session:
@@ -336,10 +391,14 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
             await session.commit()
 
         if not evidence_list:
-            async with factory() as session:
-                await set_tenant_context(session, user.tenant_id)
-                await _update_status(session, query_id, QueryStatus.DENIED.value)
-                await session.commit()
+            await _audit_terminal_result(
+                query_id=query_id,
+                tenant_id=user.tenant_id,
+                answer=_terminal_answer(),
+                status=QueryStatus.DENIED.value,
+                access_decisions=all_access_results,
+                object_source_map=all_object_source_map,
+            )
             return {"status": "denied", "query_id": str(query_id)}
 
         reranked = rerank_authorised_evidence(evidence_list, settings.FINAL_EVIDENCE_COUNT)
@@ -350,7 +409,7 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
             await session.commit()
 
         context_evidence = [r.evidence for r in reranked]
-        compiled_context = compile_context(context_evidence)
+        compiled_context = compile_context(context_evidence, query_text=query_text)
 
         async with factory() as session:
             await set_tenant_context(session, user.tenant_id)
@@ -408,8 +467,8 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
                 tenant_id=user.tenant_id,
                 answer=final_answer,
                 reranked=reranked,
-                access_decisions=access_results,
-                object_source_map=object_source_map,
+                access_decisions=all_access_results,
+                object_source_map=all_object_source_map,
                 status=final_status,
                 partial_sources=list(partial_sources) if partial_sources else None,
             )

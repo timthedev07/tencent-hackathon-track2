@@ -37,7 +37,12 @@ async def get_evidence_with_reauth(
         await set_tenant_context(session, user.tenant_id)
 
         evidence = (
-            await session.execute(select(EvidenceItem).where(EvidenceItem.id == evidence_id))
+            await session.execute(
+                select(EvidenceItem).where(
+                    EvidenceItem.id == evidence_id,
+                    EvidenceItem.tenant_id == user.tenant_id,
+                )
+            )
         ).scalar_one_or_none()
 
         if evidence is None:
@@ -87,11 +92,16 @@ async def get_evidence_with_reauth(
 
         from app.authorisation.live_check import check_live_access
 
+        source_object_id = (
+            evidence.source_object_id
+            if isinstance(evidence.source_object_id, UUID)
+            else UUID(str(evidence.source_object_id))
+        )
         access_result = await check_live_access(
             session=session,
             user=user,
             source=source,
-            source_object_id=UUID(evidence.source_object_id),
+            source_object_id=source_object_id,
         )
 
         if access_result.outcome.value != "allow":
