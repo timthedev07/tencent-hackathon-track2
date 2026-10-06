@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.canonicalise import GENESIS_MARKER, compute_event_hash
 from app.observability.logging import get_logger
-from app.persistence.models import AuditEvent
+from app.persistence.models import AuditEvent, Tenant
 
 logger = get_logger(__name__)
 
@@ -27,6 +28,13 @@ async def append_event(
     Computes the hash chain: event_hash = SHA-256(canonical_json(event) || previous_hash)
     First event uses fixed genesis marker.
     """
+    # Serialise appends for a tenant.  A max(sequence_no) calculation without
+    # a lock allows concurrent queries to produce duplicate sequence numbers
+    # and divergent chain roots.
+    await session.execute(
+        select(Tenant.id).where(Tenant.id == tenant_id).with_for_update()
+    )
+
     # Get the next sequence number
     stmt = select(func.max(AuditEvent.sequence_no)).where(AuditEvent.tenant_id == tenant_id)
     result = await session.execute(stmt)
@@ -51,6 +59,7 @@ async def append_event(
         event_type=event_type,
         canonical_payload=canonical_payload,
         previous_hash=previous_hash,
+        created_at=datetime.now(UTC),
     )
     # Compute hash
     event.event_hash = compute_event_hash(event, previous_hash)

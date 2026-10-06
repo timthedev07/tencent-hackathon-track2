@@ -26,7 +26,12 @@ logger = get_logger(__name__)
 
 def _get_checkpoint_mac_key() -> bytes:
     settings = get_settings()
-    base = (settings.OBJECT_STORE_SECRET_KEY or settings.ENCRYPTION_MASTER_KEY).encode("utf-8")
+    signing_key = settings.AUDIT_CHECKPOINT_SIGNING_KEY
+    if not signing_key:
+        if settings.is_production:
+            raise RuntimeError("AUDIT_CHECKPOINT_SIGNING_KEY is required in production")
+        signing_key = settings.ENCRYPTION_MASTER_KEY
+    base = signing_key.encode("utf-8")
     salt = b"audit-checkpoint-mac-v1"
     return hashlib.scrypt(base, salt=salt, n=2**14, r=8, p=1, dklen=32)
 

@@ -33,7 +33,15 @@ async def verify_chain(
         return True  # Empty chain is valid
 
     previous_hash = GENESIS_MARKER
+    expected_sequence = 1
     for event in events:
+        if event.sequence_no != expected_sequence or event.previous_hash != previous_hash:
+            logger.error(
+                "Audit chain verification failed — sequence or predecessor mismatch",
+                event_id=str(event.id),
+                sequence_no=event.sequence_no,
+            )
+            return False
         expected_hash = compute_event_hash(event, previous_hash)
         if event.event_hash != expected_hash:
             logger.error(
@@ -45,6 +53,7 @@ async def verify_chain(
             )
             return False
         previous_hash = event.event_hash
+        expected_sequence += 1
 
     logger.info("Audit chain verified", tenant_id=str(tenant_id), events=len(events))
     return True
