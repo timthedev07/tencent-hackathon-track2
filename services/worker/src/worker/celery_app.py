@@ -81,11 +81,19 @@ celery_app.conf.task_routes = {
     "worker.tasks.backtests.*": {"queue": "audit_checkpoint"},
 }
 
-# Autodiscover tasks
-celery_app.autodiscover_tasks(
-    [
-        "worker.tasks",
-    ]
+# Import each task module explicitly. Celery autodiscovery expects a
+# ``tasks.py`` module inside each package, while this project keeps one task
+# module per pipeline stage under ``worker.tasks``.
+celery_app.conf.imports = (
+    "worker.tasks.acl",
+    "worker.tasks.audit",
+    "worker.tasks.backfill",
+    "worker.tasks.backtests",
+    "worker.tasks.chunk",
+    "worker.tasks.deletions",
+    "worker.tasks.embed",
+    "worker.tasks.fetch",
+    "worker.tasks.normalise",
+    "worker.tasks.reconcile",
+    "worker.tasks.webhook",
 )
-
-import worker.tasks  # type: ignore[unused-import]  # noqa: F401, E402

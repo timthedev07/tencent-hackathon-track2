@@ -1,0 +1,12 @@
+.git
+.venv
+.env
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.next
+**/node_modules
+**/coverage
+*.py[cod]
+*.log
+.DS_Store

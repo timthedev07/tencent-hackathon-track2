@@ -20,6 +20,8 @@ COPY packages/ ./packages/
 
 RUN uv sync --frozen --no-dev
 
+COPY alembic.ini ./
+
 ENV PYTHONPATH="/app/services/api/src:/app/services/worker/src"
 
 CMD ["uv", "run", "celery", "-A", "worker.celery_app", "worker", "--loglevel=info"]
