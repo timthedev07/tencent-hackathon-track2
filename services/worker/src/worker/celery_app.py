@@ -17,11 +17,50 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from app.observability.logging import bind_context, clear_context, configure_logging, get_logger
 from app.settings import get_settings
 from celery import Celery
+from celery.signals import task_failure, task_postrun, task_prerun
 from kombu import Queue
 
 settings = get_settings()
+configure_logging(service_name="enterprise-assistant-worker")
+logger = get_logger(__name__)
+
+
+@task_prerun.connect
+def bind_task_logging_context(
+    task_id: str | None = None,
+    task: object | None = None,
+    **_: object,
+) -> None:
+    """Attach Celery task identity to every log emitted by the task."""
+    task_name = getattr(task, "name", None)
+    clear_context()
+    bind_context(task_id=task_id, task_name=task_name)
+
+
+@task_postrun.connect
+def clear_task_logging_context(**_: object) -> None:
+    """Prevent task context leaking into the next task in this worker."""
+    clear_context()
+
+
+@task_failure.connect
+def log_task_failure(
+    task_id: str | None = None,
+    exception: BaseException | None = None,
+    sender: object | None = None,
+    **_: object,
+) -> None:
+    """Emit a concise failure event while retaining the task correlation ID."""
+    logger.error(
+        "Celery task failed",
+        task_id=task_id,
+        task_name=getattr(sender, "name", None),
+        error_type=type(exception).__name__ if exception else "UnknownError",
+    )
+
 
 celery_app = Celery(
     "enterprise_assistant",

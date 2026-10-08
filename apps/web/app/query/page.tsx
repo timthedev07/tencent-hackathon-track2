@@ -32,6 +32,7 @@ import {
 } from '@/lib/api/client';
 
 type ViewState = 'idle' | 'streaming' | 'complete' | 'failed';
+const TERMINAL_QUERY_STATUSES = new Set(['completed', 'partial', 'denied', 'failed']);
 
 const SUGGESTIONS = [
   'What did the team decide about the Q4 migration plan?',
@@ -54,14 +55,22 @@ export default function QueryPage() {
     getConnections().then((data) => setConnections(data.connections)).catch(() => setConnections([]));
   }, []);
 
-  const loadResult = useCallback(async (queryId: string) => {
+  const loadResult = useCallback(async (queryId: string): Promise<boolean> => {
     try {
       const res = await getQueryResult(queryId);
+      if (!TERMINAL_QUERY_STATUSES.has(res.status)) return false;
       setResult(res);
-      setViewState('complete');
+      if (res.status === 'failed') {
+        setViewState('failed');
+        setError(res.errorMessage ?? `The search failed (${res.errorCode ?? 'PIPELINE_ERROR'}).`);
+      } else {
+        setViewState('complete');
+      }
+      return true;
     } catch (e) {
       setViewState('failed');
       setError(e instanceof ApiClientError ? e.message : 'Failed to load the answer.');
+      return true;
     }
   }, []);
 
@@ -76,14 +85,25 @@ export default function QueryPage() {
       const { queryId } = await createQuery(query.trim());
       const sse = new SseStream(queryId, {
         onEvent: (event) => {
-          setCurrentStage(event.event);
-          if (['query.completed', 'query.partial', 'query.denied'].includes(event.event)) loadResult(queryId);
+          if (['query.completed', 'query.partial', 'query.denied'].includes(event.event)) {
+            void loadResult(queryId);
+            return;
+          }
           if (event.event === 'query.failed') {
             setViewState('failed');
-            setError(event.data.message ?? 'The query could not be completed. Please try again.');
+            setError(event.data.message ?? 'The query could not be completed. Check the server log using the query ID.');
+            return;
           }
+          setCurrentStage(event.event);
         },
-        onError: () => { setViewState('failed'); setError('The connection was interrupted. Please try again.'); },
+        onError: (sseError) => {
+          void loadResult(queryId).then((queryIsTerminal) => {
+            if (!queryIsTerminal) {
+              setViewState('failed');
+              setError(sseError.message);
+            }
+          });
+        },
       });
       sse.connect();
     } catch (e) {
@@ -94,6 +114,7 @@ export default function QueryPage() {
 
   const connectedSources = connections.filter((connection) => connection.connected);
   const answerReady = viewState === 'complete' && result;
+  const hasNoSearchableContent = result?.errorCode === 'NO_SEARCHABLE_CONTENT';
   const copyAnswer = async () => {
     if (!result?.answer) return;
     await navigator.clipboard.writeText(result.answer);
@@ -137,7 +158,7 @@ export default function QueryPage() {
 
           {answerReady && result && <div className="space-y-5">
             {result.partialSourceWarnings.length > 0 && <GlassPanel className="flex items-start gap-3 p-4" intensity="soft"><AlertTriangle size={17} className="mt-0.5 flex-none text-amber-200" /><div><p className="text-xs font-semibold text-amber-100">Some sources were unavailable</p><p className="mt-1 text-xs leading-5 text-white/55">Answer generated from sources that could be verified. {result.partialSourceWarnings.map((warning) => `${sourceLabels[warning.source] ?? warning.source} could not be checked in time, so its content was excluded.`).join(' ')}</p></div></GlassPanel>}
-            {result.answer ? <GlassPanel className="p-6 md:p-8" intensity="strong"><div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><div className="section-kicker flex items-center gap-2"><ShieldCheck size={13} /> Verified answer</div><h2 className="mt-2 text-xl font-semibold tracking-tight text-white">Here&apos;s what I found</h2></div><div className="flex gap-2"><button className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs ghost-glass" onClick={copyAnswer}>{copied ? <Check size={13} /> : <Clipboard size={13} />} {copied ? 'Copied' : 'Copy'}</button><Link href={`/audit/${result.queryId}`} className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs ghost-glass"><FileSearch size={13} /> Audit trail</Link></div></div><p className="whitespace-pre-wrap text-[15px] leading-8 text-white/80">{result.answer}</p><div className="mt-7 flex flex-wrap items-center gap-2 border-t border-white/8 pt-4 text-[11px] text-white/35"><Check size={13} className="text-teal-300" /> Answer committed after citation and audit verification</div></GlassPanel> : <GlassPanel className="p-6" intensity="soft"><div className="text-sm font-semibold text-white">No answer available</div><p className="mt-2 text-xs leading-5 text-white/50">{result.status === 'denied' ? 'You do not currently have access to any relevant sources.' : 'The query did not produce an answer.'}</p></GlassPanel>}
+            {hasNoSearchableContent ? <GlassPanel className="p-6" intensity="soft"><div className="flex items-start gap-4"><div className="grid h-10 w-10 flex-none place-items-center rounded-xl bg-violet-300/10 text-violet-200"><FileSearch size={18} /></div><div><h2 className="text-sm font-semibold text-white">No searchable content yet</h2><p className="mt-2 max-w-xl text-xs leading-5 text-white/55">Your connected workspaces are currently empty, so Relay has nothing to search. Add content and allow the initial sync to finish, then ask again.</p><Link href="/settings" className="mt-4 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium ghost-glass">Manage sources <ArrowRight size={13} /></Link></div></div></GlassPanel> : result.answer ? <GlassPanel className="p-6 md:p-8" intensity="strong"><div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><div className="section-kicker flex items-center gap-2"><ShieldCheck size={13} /> Verified answer</div><h2 className="mt-2 text-xl font-semibold tracking-tight text-white">Here&apos;s what I found</h2></div><div className="flex gap-2"><button className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs ghost-glass" onClick={copyAnswer}>{copied ? <Check size={13} /> : <Clipboard size={13} />} {copied ? 'Copied' : 'Copy'}</button><Link href={`/audit/${result.queryId}`} className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs ghost-glass"><FileSearch size={13} /> Audit trail</Link></div></div><p className="whitespace-pre-wrap text-[15px] leading-8 text-white/80">{result.answer}</p><div className="mt-7 flex flex-wrap items-center gap-2 border-t border-white/8 pt-4 text-[11px] text-white/35"><Check size={13} className="text-teal-300" /> Answer committed after citation and audit verification</div></GlassPanel> : <GlassPanel className="p-6" intensity="soft"><div className="text-sm font-semibold text-white">No answer available</div><p className="mt-2 text-xs leading-5 text-white/50">{result.status === 'denied' ? 'You do not currently have access to any relevant sources.' : 'The query did not produce an answer.'}</p></GlassPanel>}
             {result.citations.length > 0 && <section><div className="mb-3 flex items-end justify-between"><div><div className="section-title">Evidence used</div><div className="mt-1 section-kicker">Open a citation to check access again before viewing its text.</div></div><span className="source-chip"><ShieldCheck size={12} /> {result.citations.length} verified</span></div><div className="space-y-3">{result.citations.map((citation: CitationType) => <Citation key={citation.evidenceId} citation={citation} />)}</div></section>}
           </div>}
         </div>

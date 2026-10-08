@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     # ── Datastores ─────────────────────────────────────────────────
     DATABASE_URL: str = "postgresql+asyncpg://assistant:assistant@localhost:5432/assistant"
     REDIS_URL: str = "redis://localhost:6379/0"
+    SQL_ECHO: bool = False
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = ""
+    SERVICE_NAME: str = "enterprise-assistant-api"
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "console"
+    LOG_COLOURS: bool = True
 
     # ── OIDC ───────────────────────────────────────────────────────
     OIDC_ISSUER: str = ""

@@ -8,7 +8,7 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.oidc import AuthenticatedUser, resolve_user, validate_token
-from app.observability.logging import get_logger
+from app.observability.logging import bind_context, get_logger
 from app.persistence.session import get_session, set_tenant_context
 
 logger = get_logger(__name__)
@@ -63,6 +63,7 @@ async def get_authenticated_user(
 
     # Set RLS context for this transaction
     await set_tenant_context(session, user.tenant_id)
+    bind_context(tenant_id=user.tenant_id, user_id=user.user_id)
 
     return user
 
