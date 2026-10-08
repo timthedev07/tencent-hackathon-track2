@@ -62,12 +62,12 @@ jobs:
         run: uv run python scripts/seed_fixtures.py
       - name: Start Celery query worker
         run: |
-          uv run celery -A worker.celery_app worker \
+          .venv/bin/celery -A worker.celery_app worker \
             --loglevel=info --concurrency=2 \
             --pidfile=/tmp/chronicle-query-worker.pid \
             > /tmp/chronicle-query-worker.log 2>&1 &
           for attempt in {1..20}; do
-            if uv run celery -A worker.celery_app inspect ping --timeout=1 | grep -q pong; then
+            if .venv/bin/celery -A worker.celery_app inspect ping --timeout=1 | grep -q pong; then
               exit 0
             fi
             sleep 1
@@ -76,6 +76,18 @@ jobs:
           exit 1
       - name: Run durable query integration tests
         run: uv run pytest tests/integration/test_query_execution_postgres.py -v
+      - name: Stop Celery query worker
+        if: always()
+        run: |
+          if [ -f /tmp/chronicle-query-worker.pid ]; then
+            kill -TERM "$(cat /tmp/chronicle-query-worker.pid)" || true
+            for attempt in {1..10}; do
+              if ! kill -0 "$(cat /tmp/chronicle-query-worker.pid)" 2>/dev/null; then
+                exit 0
+              fi
+              sleep 1
+            done
+          fi
       - name: Show worker log
         if: always()
         run: cat /tmp/chronicle-query-worker.log
