@@ -14,7 +14,7 @@ The most important design choice is sound:
 
 The repository now contains much more than scaffolding. It has a FastAPI API, provider OAuth flows and connectors, a multi-stage Celery ingestion pipeline, hybrid PostgreSQL/pgvector retrieval, live permission checks, answer verification, audit-chain logic, and a polished Next.js interface.
 
-The main weakness is now full-product integration readiness rather than backend execution semantics. Deterministic fixture seeding and the Chronicle backend foundation pass fresh- and upgraded-database PostgreSQL smoke runs, including current and historical queries, role-based visibility, control events, capsules, backtests, chain verification and checkpoint export. Query creation now publishes a dedicated Celery task, a database lease prevents concurrent execution, and real pipeline stages are persisted and replayed through reconnect-safe SSE. However, these checks are not yet automated in CI, the frontend dependency state is inconsistent, repository-wide lint and strict type checks retain pre-existing failures, and the Chronicle-specific browser journey is incomplete.
+The main weakness is now full-product integration readiness rather than backend execution semantics. Deterministic fixture seeding and the Chronicle backend foundation pass fresh- and upgraded-database PostgreSQL smoke runs, including current and historical queries, role-based visibility, control events, capsules, backtests, chain verification and checkpoint export. Query creation publishes a dedicated Celery task, a database lease prevents concurrent execution, and real pipeline stages are persisted and replayed through reconnect-safe SSE. A focused GitHub Actions job now migrates a fresh pgvector database, seeds Chronicle, starts Redis/Celery, and tests lease contention, expiry recovery, redelivery and audit-failure safety. The frontend dependency state remains inconsistent, repository-wide lint and strict type checks retain pre-existing failures, and the Chronicle-specific browser journey is incomplete.
 
 ## Current assessment
 
@@ -28,7 +28,7 @@ The main weakness is now full-product integration readiness rather than backend 
 | Query pipeline | Strong prototype | Hybrid retrieval through audited answer generation runs in Celery with a database lease and replayable persisted progress events. |
 | Security controls | Good prototype foundation | Fail-closed checks, live reauthorisation, RLS, encrypted content, and audit-before-response are represented. |
 | Frontend | Feature-complete prototype UI | Login, source settings, query progress, citations, evidence, and audit views exist. Dependency setup is currently inconsistent. |
-| Automated tests | Useful but incomplete | 42 backend tests pass; PostgreSQL/worker smoke proof exists, but most automated tests remain unit or isolated simulations. |
+| Automated tests | Useful and improving | 42 default backend tests pass; four opt-in PostgreSQL/Redis integration tests cover the query worker's critical failure semantics. |
 | Demo readiness | Medium-high for backend, medium overall | The deterministic backend, worker query path and smoke validator work against PostgreSQL, but the Chronicle UI and a repeatable clean-checkout browser run are still missing. |
 | Production readiness | Low | Build reproducibility, identity UX, database roles, integration tests, operations, and quality gates need work. |
 
@@ -269,7 +269,8 @@ The following checks were run against this snapshot:
 
 | Check | Result |
 |---|---|
-| Backend tests | **Pass:** 42 tests in 0.82 seconds. |
+| Backend tests | **Pass:** 42 default tests; four infrastructure tests are skipped unless explicitly enabled. |
+| Query execution integration | **Pass locally:** 4 PostgreSQL/Redis/Celery cases, including forced audit failure and redelivery. |
 | Targeted changed-file Ruff | **Pass.** |
 | Targeted changed-file Pyright | **Pass:** 0 errors; existing warning debt remains. |
 | Ruff lint | **Fail:** 44 findings, mostly magic HTTP constants and long lines in the isolated pipeline test. |
@@ -291,7 +292,7 @@ The 42 passing backend tests cover:
 - The durable-query structural guarantees: SSE cannot invoke the pipeline, lease fields exist, and the worker task/queue are explicitly registered.
 - Async database engine and session-factory disposal between synchronous Celery invocations.
 
-They do **not** yet automate the browser or live-provider path end to end. The accompanying smoke validator has separately exercised the actual PostgreSQL migration, seed, temporal query, permission, capsule, backtest and checkpoint paths against both fresh and upgraded databases. A live Compose check also proved `POST /queries` → Redis → Celery → PostgreSQL → SSE: one execution attempt, a released lease, nine ordered events and cursor replay returning only the unseen terminal event.
+They do **not** yet automate the browser or live-provider path end to end. The accompanying smoke validator has separately exercised the actual PostgreSQL migration, seed, temporal query, permission, capsule, backtest and checkpoint paths against both fresh and upgraded databases. The infrastructure-gated suite now automates a fresh migration and seed plus `PostgreSQL → Redis → Celery` worker execution, one-winner lease contention, expired-lease takeover, terminal redelivery, ordered events, cursor replay and no-answer-on-audit-failure.
 
 ## Main gaps and risks
 
@@ -317,13 +318,12 @@ Compose exposes PostgreSQL on host port `5434`, while `.env.example` defaults to
 
 The repository declares Ruff and strict Pyright as standards, but both currently fail. This weakens the usefulness of `make ci` and makes it hard to tell new failures from accepted debt.
 
-### 5. Integration coverage is shallow
+### 5. Integration coverage is still incomplete
 
-The provider-shaped isolated pipeline tests are valuable, but there are no verified tests covering:
+The provider-shaped and query-worker integration tests are valuable, but there are still no automated tests covering:
 
-- Alembic migrations against PostgreSQL with pgvector.
 - RLS cross-tenant isolation in a real database.
-- Celery task retry/crash recovery under forced lease contention.
+- Hard worker termination followed by broker redelivery after lease expiry.
 - Webhook deduplication in PostgreSQL.
 - OAuth callback persistence.
 - Real or sandbox provider permission checks.
@@ -358,11 +358,11 @@ The `jess` branch currently includes uncommitted runtime/documentation edits and
 4. Make `make ci` pass: fix Ruff, Pyright configuration, and actual type errors.
 5. Add a single `make demo-up` or equivalent that builds, migrates, seeds, and verifies readiness.
 
-### Priority 1 — Automate the proven backend
+### Priority 1 — Extend backend integration proof
 
-1. Convert the validated migration/seed/query/event/checkpoint/worker smoke path into an isolated PostgreSQL and Redis CI integration suite.
-2. Add forced worker redelivery, active-lease contention and expired-lease recovery tests.
-3. Add a forced audit-commit failure test proving that no terminal success event or answer becomes observable.
+1. Add cross-tenant RLS tests using a restricted application role rather than the database owner.
+2. Add hard worker-termination recovery and webhook-deduplication tests.
+3. Automate audit-chain tampering and exported-checkpoint mismatch checks with MinIO.
 4. Record a fresh-stack backend demo run from clone to successful audit lookup.
 
 ### Priority 2 — Complete the Chronicle product loop
@@ -432,8 +432,8 @@ Once those pieces are complete, the repository should support a strong demonstra
 ### Current delivery estimate
 
 - Existing permission-safe assistant foundation: strong.
-- Chronicle-specific backend foundation: roughly 72% complete.
-- Full hackathon MVP, including UI and proven end-to-end exit criteria: roughly 55% complete.
+- Chronicle-specific backend foundation: roughly 76% complete.
+- Full hackathon MVP, including UI and proven end-to-end exit criteria: roughly 58% complete.
 
 These figures are engineering estimates, not acceptance results. A stage is only complete after its stated tests and demo path pass against PostgreSQL.
 
@@ -443,8 +443,8 @@ These figures are engineering estimates, not acceptance results. A stage is only
 |---|---|---|---|
 | Stage 0 — Security skeleton | In progress | Four fixture source connections use the existing connector boundary and perform a fresh database-backed `check_access` decision. PostgreSQL smoke runs prove Bob's deny/grant/revoke transitions. | Add captured model-request/log assertions across all four sources and automate the database checks in CI. |
 | Stage 1 — Bitemporal foundation | In progress | Migration `0004` adds temporal identity/ACL fields, claims, policy versions, capsules, checkpoints, fixture events and backtest records. The Chronicle fixture seeds temporal versions and ACLs. | Make every real ingestion ACL/content mutation append-only; add late-observation, tenant-isolation and update-state integration tests. |
-| Stage 2 — Query pipeline | Implemented; CI proof pending | `POST /v1/queries` accepts timezone-aware `asOf` and publishes a Celery job. A database lease guards execution. Vector, lexical, exact-scan, identity, ACL and authorised-text loading apply no-hindsight filtering. Every real stage is persisted in `query_events`; SSE is read-only and resumes using `Last-Event-ID`. Fresh/upgraded PostgreSQL smoke runs and a live Compose worker run pass. | Promote the golden role/time/worker/reconnect cases into isolated CI tests and add forced lease-expiry/redelivery coverage. |
-| Stage 3 — Atomic audit and replay | In progress | Query completion atomically persists evidence IDs, version IDs, content hashes, configuration versions, a sealed context hash, an Evidence Capsule and audit event. Chain-verification and checkpoint endpoints exist. | Prove forced audit failure suppresses output; add checkpoint tamper/rewrite tests and a repeatable external-store demonstration. |
+| Stage 2 — Query pipeline | Implemented; core worker semantics automated | `POST /v1/queries` accepts timezone-aware `asOf` and publishes a Celery job. A database lease guards execution. Every real stage is persisted in `query_events`; SSE is read-only and resumes using `Last-Event-ID`. A fresh-database GitHub Actions job covers active contention, expiry takeover, real Redis/Celery execution, terminal redelivery and ordered replay. | Promote the full golden role/time scenarios into pytest and add hard-kill recovery plus browser coverage. |
+| Stage 3 — Atomic audit and replay | In progress | Query completion atomically persists evidence IDs, version IDs, content hashes, configuration versions, a sealed context hash, an Evidence Capsule and audit event. An integration test forces audit commit failure and proves no answer, evidence, capsule or audit event becomes observable; SSE ends with failure. | Add checkpoint tamper/rewrite tests and a repeatable external-store demonstration. |
 | Stage 4 — Knowledge audit and backtesting | Foundation implemented | `/v1/knowledge-audit/findings` deterministically reports conflict, staleness, access-risk and process-gap findings. `/v1/backtests/runs` persists role/time visibility, leakage and no-hindsight results with configuration versions. | Extend runs through the full answer/citation pipeline, store baselines, classify answer/citation drift and prove deliberate regressions. |
 | Stage 5 — Demo hardening | Not started | Fixture seed and grant/revoke/content-update control endpoints provide backend demo primitives. | Build the six Chronicle UI surfaces, wire the `asOf` picker and controls, generate client types, and create a clean reset-to-demo E2E test. |
 | Optional Stage 6 — Real connector | Existing but unverified | Confluence, Jira, Slack and Drive connector modules already exist. | Defer until the fixture-first Core MVP is accepted; then validate one delegated OAuth connector end to end. |
@@ -462,6 +462,7 @@ These figures are engineering estimates, not acceptance results. A stage is only
 - Curated role/time visibility backtest runs and stored regression results.
 - Dedicated background query execution with a database lease and explicit Celery queue.
 - Real, monotonic query-stage events plus read-only cursor-based SSE replay.
+- Fresh-database CI with real PostgreSQL, Redis and Celery coverage for execution leases and audit-failure safety.
 
 ### API delta
 
@@ -478,11 +479,10 @@ POST /v1/demo/fixtures/events/{eventId}/apply # grant, revoke, content update
 
 ### Highest-priority path to the PRD backend
 
-1. Promote the passing migration `0005`, fixture, Alice/Bob/current/`asOf`/grant/revoke/update/worker/reconnect smoke scenarios into isolated PostgreSQL and Redis CI integration tests.
-2. Add forced query redelivery, lease expiry and audit-commit failure tests.
+1. Promote the remaining Alice/Bob/current/`asOf`/grant/revoke/update smoke scenarios into the PostgreSQL CI suite.
+2. Add restricted-role RLS, hard worker-kill recovery, audit-row tampering and exported-checkpoint mismatch tests.
 3. Drive backtests through the same production query pipeline, using a deterministic captured model gateway, so citation and answer drift are measured rather than inferred from visibility.
 4. Replace delete-and-reinsert ACL ingestion with append-and-retire semantics everywhere.
-5. Add audit-row tampering and exported-checkpoint mismatch tests.
-6. Wire the Chronicle UI and its browser E2E path; keep the optional real connector last.
+5. Wire the Chronicle UI and its browser E2E path; keep the optional real connector last.
 
-The key architectural direction now matches the PRD: fixture-first, bitemporal, permission-safe, sealed, replayable and backtestable. The core database and production-style worker query path have working smoke proof; the main remaining gaps are automated integration evidence, full-pipeline regression backtests, append-only ACL mutation everywhere and the Chronicle-specific frontend.
+The key architectural direction now matches the PRD: fixture-first, bitemporal, permission-safe, sealed, replayable and backtestable. The core database and production-style worker query path now have automated proof; the main remaining gaps are broader RLS/provider/checkpoint integration evidence, full-pipeline regression backtests, append-only ACL mutation everywhere and the Chronicle-specific frontend.
