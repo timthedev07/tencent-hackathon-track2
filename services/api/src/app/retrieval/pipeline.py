@@ -18,6 +18,7 @@ INV-001: candidate text must not enter reranker/context/LLM/logs until auth.
 from __future__ import annotations
 
 import time
+from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import UUID, uuid5
 
@@ -27,6 +28,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit.chain import append_event
 from app.auth.credentials import EncryptedPayload, get_credential_manager
 from app.auth.oidc import AuthenticatedUser
+from app.domain.query_execution import (
+    append_query_event,
+    fail_query_execution,
+    record_query_stage,
+)
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
@@ -82,14 +88,6 @@ async def _load_as_of(session: AsyncSession, query_id: UUID) -> datetime | None:
     return (
         await session.execute(select(QueryRun.as_of).where(QueryRun.id == query_id))
     ).scalar_one_or_none()
-
-
-async def _update_status(session: AsyncSession, query_id: UUID, status: str) -> None:
-    run = (
-        await session.execute(select(QueryRun).where(QueryRun.id == query_id))
-    ).scalar_one_or_none()
-    if run is not None:
-        run.status = status
 
 
 async def _load_authorised_text(
@@ -271,10 +269,21 @@ async def _audit_commit(
             )
         )
 
+    terminal_event = {
+        QueryStatus.PARTIAL.value: "query.partial",
+        QueryStatus.DENIED.value: "query.denied",
+        QueryStatus.FAILED.value: "query.failed",
+    }.get(status, "query.completed")
+    terminal_message = {
+        QueryStatus.PARTIAL.value: "Answer completed with partial source coverage",
+        QueryStatus.DENIED.value: "No authorised evidence was available",
+        QueryStatus.FAILED.value: "The query could not be completed",
+    }.get(status, "Answer completed")
+
     await append_event(
         session=session,
         tenant_id=tenant_id,
-        event_type="query.completed",
+        event_type=terminal_event,
         canonical_payload={
             "query_id": str(query_id),
             "status": status,
@@ -286,6 +295,14 @@ async def _audit_commit(
             ),
         },
         query_id=query_id,
+    )
+    await append_query_event(
+        session,
+        tenant_id,
+        query_id,
+        terminal_event,
+        {"message": terminal_message, "status": status},
+        status=status,
     )
 
 
@@ -336,8 +353,21 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
             await set_tenant_context(session, user.tenant_id)
             query_text = await _decrypt_query(session, query_id, user.user_id)
             as_of = await _load_as_of(session, query_id)
-            await _update_status(session, query_id, QueryStatus.AUTHENTICATED.value)
-            await session.commit()
+
+        await record_query_stage(
+            query_id,
+            user.tenant_id,
+            status=QueryStatus.AUTHENTICATED.value,
+            event_type="query.authenticated",
+            message="Identity verified",
+        )
+        await record_query_stage(
+            query_id,
+            user.tenant_id,
+            status=QueryStatus.AUTHENTICATED.value,
+            event_type="query.retrieving",
+            message="Searching connected sources",
+        )
 
         gateway = get_model_gateway()
         query_embedding = await gateway.embed([query_text], settings.EMBEDDING_MODEL)
@@ -359,8 +389,6 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
                 settings.CANDIDATE_TOP_K,
                 as_of,
             )
-            await _update_status(session, query_id, QueryStatus.CANDIDATES.value)
-            await session.commit()
 
         candidates = fuse_candidates(vector_hits, lexical_hits, settings.RRF_K)
 
@@ -372,6 +400,14 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
                 status=QueryStatus.DENIED.value,
             )
             return {"status": "denied", "query_id": str(query_id)}
+
+        await record_query_stage(
+            query_id,
+            user.tenant_id,
+            status=QueryStatus.CANDIDATES.value,
+            event_type="query.reauthorising",
+            message="Checking your current access",
+        )
 
         from app.authorisation.live_check import check_live_access_batch
         from app.authorisation.local_acl import batch_check_local_acl
@@ -468,8 +504,6 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
                 authorised_object_ids,
                 as_of,
             )
-            await _update_status(session, query_id, QueryStatus.REAUTHORISED.value)
-            await session.commit()
 
         if not evidence_list:
             await _audit_terminal_result(
@@ -482,12 +516,14 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
             )
             return {"status": "denied", "query_id": str(query_id)}
 
+        await record_query_stage(
+            query_id,
+            user.tenant_id,
+            status=QueryStatus.REAUTHORISED.value,
+            event_type="query.reranking",
+            message="Ranking authorised evidence",
+        )
         reranked = rerank_authorised_evidence(evidence_list, settings.FINAL_EVIDENCE_COUNT)
-
-        async with factory() as session:
-            await set_tenant_context(session, user.tenant_id)
-            await _update_status(session, query_id, QueryStatus.RERANKED.value)
-            await session.commit()
 
         context_evidence = [r.evidence for r in reranked]
         compiled_context = compile_context(
@@ -497,10 +533,13 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
             as_of=as_of,
         )
 
-        async with factory() as session:
-            await set_tenant_context(session, user.tenant_id)
-            await _update_status(session, query_id, QueryStatus.COMPILED.value)
-            await session.commit()
+        await record_query_stage(
+            query_id,
+            user.tenant_id,
+            status=QueryStatus.COMPILED.value,
+            event_type="query.generating",
+            message="Generating answer",
+        )
 
         generated_obj = await gateway.generate(compiled_context, OutputGeneratedAnswer)
         generated_answer = (
@@ -512,10 +551,13 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
             )
         )
 
-        async with factory() as session:
-            await set_tenant_context(session, user.tenant_id)
-            await _update_status(session, query_id, QueryStatus.GENERATED.value)
-            await session.commit()
+        await record_query_stage(
+            query_id,
+            user.tenant_id,
+            status=QueryStatus.GENERATED.value,
+            event_type="query.verifying",
+            message="Verifying citations",
+        )
 
         verification = verify_answer(generated_answer, context_evidence)
         if not verification.valid:
@@ -537,10 +579,13 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
         else:
             final_answer = verification.answer or generated_answer
 
-        async with factory() as session:
-            await set_tenant_context(session, user.tenant_id)
-            await _update_status(session, query_id, QueryStatus.VERIFIED.value)
-            await session.commit()
+        await record_query_stage(
+            query_id,
+            user.tenant_id,
+            status=QueryStatus.VERIFIED.value,
+            event_type="query.auditing",
+            message="Saving audit record",
+        )
 
         is_partial = bool(partial_sources)
         final_status = QueryStatus.PARTIAL.value if is_partial else QueryStatus.COMPLETED.value
@@ -568,18 +613,12 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
 
     except Exception as exc:
         logger.exception("Query pipeline failed", query_id=str(query_id), error=str(exc))
-        try:
-            async with factory() as session:
-                await set_tenant_context(session, user.tenant_id)
-                await _update_status(session, query_id, QueryStatus.FAILED.value)
-                run = (
-                    await session.execute(select(QueryRun).where(QueryRun.id == query_id))
-                ).scalar_one_or_none()
-                if run is not None:
-                    run.error_code = "PIPELINE_ERROR"
-                    run.completed_at = datetime.now(UTC)
-                await session.commit()
-        except Exception:
-            pass
+        with suppress(Exception):
+            await fail_query_execution(
+                query_id,
+                user.tenant_id,
+                error_code="PIPELINE_ERROR",
+                message="The query could not be completed.",
+            )
         QUERY_LATENCY.labels(status="failed").observe(time.monotonic() - start_time)
         return {"status": "failed", "query_id": str(query_id)}

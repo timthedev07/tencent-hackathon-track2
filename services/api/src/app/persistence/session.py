@@ -66,7 +66,8 @@ async def set_tenant_context(session: AsyncSession, tenant_id: UUID | str) -> No
 
 async def dispose_engine() -> None:
     """Dispose the global engine — for testing and shutdown."""
-    global _engine
+    global _engine, _session_factory
     if _engine is not None:
         await _engine.dispose()
         _engine = None
+    _session_factory = None

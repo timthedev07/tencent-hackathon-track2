@@ -395,6 +395,9 @@ class QueryRun(Base):
     context_policy_version: Mapped[str | None] = mapped_column(Text)
     context_compiler_version: Mapped[str | None] = mapped_column(Text)
     authorised_context_hash: Mapped[str | None] = mapped_column(Text)
+    execution_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    execution_lease_token: Mapped[str | None] = mapped_column(Text)
+    execution_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

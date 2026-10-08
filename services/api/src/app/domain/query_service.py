@@ -16,17 +16,20 @@ This is the heart of the system. It orchestrates:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime
 from uuid import UUID
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 
 from app.auth.credentials import EncryptedPayload, get_credential_manager
 from app.auth.oidc import AuthenticatedUser
+from app.domain.query_execution import TERMINAL_QUERY_STATUSES, append_query_event
 from app.observability.logging import get_logger
-from app.persistence.models import QueryRun
+from app.persistence.models import QueryEvent, QueryRun
 from app.persistence.session import get_session_factory, set_tenant_context
 
 logger = get_logger(__name__)
@@ -53,49 +56,111 @@ async def create_query_run(
             status="created",
         )
         session.add(run)
+        await session.flush()
+        run_id = UUID(str(run.id))
+        await append_query_event(
+            session,
+            tenant_id,
+            run_id,
+            "query.queued",
+            {"message": "Query queued for secure execution"},
+        )
         await session.commit()
         await session.refresh(run)
-        return {"id": run.id, "status": run.status}
+        return {"id": run_id, "status": run.status}
+
+
+def enqueue_query_run(query_id: UUID, tenant_id: UUID, user_id: UUID) -> None:
+    """Publish a durable query-execution task to the dedicated worker queue."""
+    from worker.tasks.queries import run_query
+
+    run_query.apply_async(  # type: ignore[union-attr]
+        kwargs={
+            "query_id": str(query_id),
+            "tenant_id": str(tenant_id),
+            "user_id": str(user_id),
+        },
+        queue="query_execution",
+    )
+
+
+async def ensure_query_access(query_id: UUID, user: AuthenticatedUser) -> None:
+    """Return 404 unless the authenticated user owns the requested query."""
+    factory = get_session_factory()
+    async with factory() as session:
+        await set_tenant_context(session, user.tenant_id)
+        exists = await session.scalar(
+            select(QueryRun.id).where(
+                QueryRun.id == query_id,
+                QueryRun.user_id == user.user_id,
+                QueryRun.tenant_id == user.tenant_id,
+            )
+        )
+    if exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "SOURCE_OBJECT_NOT_FOUND", "message": "Query not found."}},
+        )
 
 
 async def stream_events(
     query_id: UUID,
     user: AuthenticatedUser,
+    after_sequence: int = 0,
 ) -> AsyncIterator[dict]:
-    """Stream SSE progress events for a query.
+    """Replay persisted progress events and then tail newly committed events.
 
-    Events: query.authenticated, query.retrieving, query.reauthorising,
-    query.reranking, query.generating, query.verifying, query.auditing,
-    query.completed, query.partial, query.denied, query.failed
+    This projection is intentionally read-only. Query execution belongs to the
+    worker and is guarded by a database lease, so reconnecting cannot run the
+    pipeline a second time.
     """
-    # Import here to avoid circular imports during scaffolding
-    from app.retrieval.pipeline import run_query_pipeline
+    cursor = max(after_sequence, 0)
+    factory = get_session_factory()
 
-    events = [
-        ("query.authenticated", "Identity verified"),
-        ("query.retrieving", "Searching connected sources"),
-        ("query.reauthorising", "Checking your current access"),
-        ("query.reranking", "Ranking authorised evidence"),
-        ("query.generating", "Generating answer"),
-        ("query.verifying", "Verifying citations"),
-        ("query.auditing", "Saving audit record"),
-    ]
+    while True:
+        async with factory() as session:
+            await set_tenant_context(session, user.tenant_id)
+            run = await session.scalar(
+                select(QueryRun).where(
+                    QueryRun.id == query_id,
+                    QueryRun.user_id == user.user_id,
+                    QueryRun.tenant_id == user.tenant_id,
+                )
+            )
+            if run is None:
+                return
+            events = (
+                await session.scalars(
+                    select(QueryEvent)
+                    .where(
+                        QueryEvent.query_id == query_id,
+                        QueryEvent.tenant_id == user.tenant_id,
+                        QueryEvent.sequence_no > cursor,
+                    )
+                    .order_by(QueryEvent.sequence_no)
+                )
+            ).all()
+            run_status = run.status
 
-    for event_type, message in events:
-        yield {"event": event_type, "data": {"queryId": str(query_id), "message": message}}
+        for event in events:
+            cursor = event.sequence_no
+            data = {"queryId": str(query_id), **event.payload}
+            yield {
+                "id": str(event.sequence_no),
+                "event": event.event_type,
+                "data": json.dumps(data, separators=(",", ":")),
+            }
+            if event.event_type in {
+                "query.completed",
+                "query.partial",
+                "query.denied",
+                "query.failed",
+            }:
+                return
 
-    # Run the actual pipeline
-    result = await run_query_pipeline(query_id, user)
-
-    terminal_event = "query.completed"
-    if result.get("status") == "partial":
-        terminal_event = "query.partial"
-    elif result.get("status") == "denied":
-        terminal_event = "query.denied"
-    elif result.get("status") == "failed":
-        terminal_event = "query.failed"
-
-    yield {"event": terminal_event, "data": {"queryId": str(query_id)}}
+        if run_status in TERMINAL_QUERY_STATUSES:
+            return
+        await asyncio.sleep(0.25)
 
 
 async def get_result(query_id: UUID, user: AuthenticatedUser) -> dict:
@@ -112,8 +177,6 @@ async def get_result(query_id: UUID, user: AuthenticatedUser) -> dict:
         run = result.scalar_one_or_none()
 
         if run is None:
-            from fastapi import HTTPException, status
-
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={

@@ -1,16 +1,17 @@
-"""Celery application with 10 priority queues.
+"""Celery application with 11 priority queues.
 
 Queues by priority (1 = highest):
 1. deletions_priority
 2. acl_priority
-3. webhook_ingest
-4. source_fetch
-5. normalisation
-6. chunking
-7. embeddings
-8. reconciliation
-9. backfill
-10. audit_checkpoint / backtests
+3. query_execution
+4. webhook_ingest
+5. source_fetch
+6. normalisation
+7. chunking
+8. embeddings
+9. reconciliation
+10. backfill
+11. audit_checkpoint / backtests
 """
 
 from __future__ import annotations
@@ -33,14 +34,15 @@ celery_app = Celery(
 QUEUES = (
     Queue("deletions_priority", routing_key="deletions_priority", priority=1),
     Queue("acl_priority", routing_key="acl_priority", priority=2),
-    Queue("webhook_ingest", routing_key="webhook_ingest", priority=3),
-    Queue("source_fetch", routing_key="source_fetch", priority=4),
-    Queue("normalisation", routing_key="normalisation", priority=5),
-    Queue("chunking", routing_key="chunking", priority=6),
-    Queue("embeddings", routing_key="embeddings", priority=7),
-    Queue("reconciliation", routing_key="reconciliation", priority=8),
-    Queue("backfill", routing_key="backfill", priority=9),
-    Queue("audit_checkpoint", routing_key="audit_checkpoint", priority=10),
+    Queue("query_execution", routing_key="query_execution", priority=3),
+    Queue("webhook_ingest", routing_key="webhook_ingest", priority=4),
+    Queue("source_fetch", routing_key="source_fetch", priority=5),
+    Queue("normalisation", routing_key="normalisation", priority=6),
+    Queue("chunking", routing_key="chunking", priority=7),
+    Queue("embeddings", routing_key="embeddings", priority=8),
+    Queue("reconciliation", routing_key="reconciliation", priority=9),
+    Queue("backfill", routing_key="backfill", priority=10),
+    Queue("audit_checkpoint", routing_key="audit_checkpoint", priority=11),
 )
 
 celery_app.conf.update(
@@ -70,6 +72,7 @@ celery_app.conf.update(
 celery_app.conf.task_routes = {
     "worker.tasks.deletions.*": {"queue": "deletions_priority"},
     "worker.tasks.acl.*": {"queue": "acl_priority"},
+    "worker.tasks.queries.*": {"queue": "query_execution"},
     "worker.tasks.webhook.*": {"queue": "webhook_ingest"},
     "worker.tasks.fetch.*": {"queue": "source_fetch"},
     "worker.tasks.normalise.*": {"queue": "normalisation"},
@@ -94,6 +97,7 @@ celery_app.conf.imports = (
     "worker.tasks.embed",
     "worker.tasks.fetch",
     "worker.tasks.normalise",
+    "worker.tasks.queries",
     "worker.tasks.reconcile",
     "worker.tasks.webhook",
 )

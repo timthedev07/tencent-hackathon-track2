@@ -18,7 +18,7 @@ async def main() -> None:
     from app.auth.oidc import AuthenticatedUser
     from app.domain.backtest_service import get_backtest_run, run_backtests
     from app.domain.knowledge_audit_service import list_knowledge_findings
-    from app.persistence.models import SourceObject, Tenant, User
+    from app.persistence.models import QueryEvent, SourceObject, Tenant, User
     from app.persistence.session import (
         dispose_engine,
         get_session_factory,
@@ -130,7 +130,7 @@ async def main() -> None:
         async def execute_query(
             requester: AuthenticatedUser,
             as_of: datetime | None = None,
-        ) -> tuple[dict, dict]:
+        ) -> tuple[dict, dict, list[tuple[int, str]]]:
             created = await create_query_run(
                 requester.user_id,
                 requester.tenant_id,
@@ -141,14 +141,42 @@ async def main() -> None:
             await run_query_pipeline(query_id, requester)
             result = await get_result(query_id, requester)
             capsule = await get_audit_capsule(query_id, actor)
-            return result, capsule
+            async with factory() as session:
+                await set_tenant_context(session, requester.tenant_id)
+                events = (
+                    await session.execute(
+                        select(QueryEvent.sequence_no, QueryEvent.event_type)
+                        .where(QueryEvent.query_id == query_id)
+                        .order_by(QueryEvent.sequence_no)
+                    )
+                ).all()
+            return result, capsule, [(row[0], row[1]) for row in events]
 
-        alice_current, alice_capsule = await execute_query(alice_actor)
-        alice_historical, historical_capsule = await execute_query(
+        alice_current, alice_capsule, alice_events = await execute_query(alice_actor)
+        alice_historical, historical_capsule, historical_events = await execute_query(
             alice_actor,
             datetime(2026, 9, 1, 10, 30, tzinfo=UTC),
         )
-        bob_current, bob_capsule = await execute_query(bob_actor)
+        bob_current, bob_capsule, bob_events = await execute_query(bob_actor)
+        expected_event_types = {
+            "query.queued",
+            "query.authenticated",
+            "query.retrieving",
+            "query.reauthorising",
+            "query.reranking",
+            "query.generating",
+            "query.verifying",
+            "query.auditing",
+            "query.completed",
+        }
+
+        def valid_event_stream(events: list[tuple[int, str]]) -> bool:
+            return (
+                [sequence for sequence, _ in events] == list(range(1, len(events) + 1))
+                and {event_type for _, event_type in events} == expected_event_types
+                and events[-1][1] == "query.completed"
+            )
+
         query_checks = {
             "aliceCurrentCompleted": alice_current["status"] == "completed",
             "aliceCurrentIncludesDrive": any(
@@ -170,6 +198,10 @@ async def main() -> None:
             "auditChainsVerified": all(
                 capsule.get("auditChainVerified")
                 for capsule in (alice_capsule, historical_capsule, bob_capsule)
+            ),
+            "queryEventsPersistedInOrder": all(
+                valid_event_stream(events)
+                for events in (alice_events, historical_events, bob_events)
             ),
         }
 

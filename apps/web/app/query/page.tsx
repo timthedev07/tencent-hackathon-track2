@@ -103,6 +103,7 @@ export default function QueryPage() {
 
   const progressLabel = useMemo(() => {
     const labels: Partial<Record<SseEventType, string>> = {
+      'query.queued': 'Queued for secure execution',
       'query.authenticated': 'Authenticating your request',
       'query.retrieving': 'Searching your connected sources',
       'query.reauthorising': 'Checking your current access',

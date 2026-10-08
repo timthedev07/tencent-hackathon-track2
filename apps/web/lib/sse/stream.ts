@@ -1,5 +1,5 @@
 export type SseEventType =
-  | 'query.authenticated' | 'query.retrieving' | 'query.reauthorising'
+  | 'query.queued' | 'query.authenticated' | 'query.retrieving' | 'query.reauthorising'
   | 'query.reranking' | 'query.generating' | 'query.verifying'
   | 'query.auditing' | 'query.completed' | 'query.partial'
   | 'query.denied' | 'query.failed';
@@ -15,6 +15,7 @@ export class SseStream {
   private reconnectAttempts = 0;
   private readonly maxReconnectAttempts = 5;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastEventId: string | null = null;
 
   constructor(private readonly queryId: string, private readonly handlers: SseHandlers) {}
 
@@ -26,8 +27,13 @@ export class SseStream {
     }
     this.abortController = new AbortController();
     try {
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        Accept: 'text/event-stream',
+      };
+      if (this.lastEventId) headers['Last-Event-ID'] = this.lastEventId;
       const response = await fetch(`${API_URL}${API_PREFIX}/queries/${this.queryId}/events`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+        headers,
         signal: this.abortController.signal,
         cache: 'no-store',
       });
@@ -56,6 +62,7 @@ export class SseStream {
     let buffer = '';
     let eventName = '';
     let data = '';
+    let eventId = '';
     const terminalEvents = new Set(['query.completed', 'query.partial', 'query.denied', 'query.failed']);
     while (true) {
       const { value, done } = await reader.read();
@@ -65,10 +72,12 @@ export class SseStream {
       buffer = lines.pop() ?? '';
       for (const line of lines) {
         if (line.startsWith('event:')) eventName = line.slice(6).trim();
-        else if (line.startsWith('data:')) data += line.slice(5).trim();
+        else if (line.startsWith('data:')) data += `${line.slice(5).trim()}\n`;
+        else if (line.startsWith('id:')) eventId = line.slice(3).trim();
         else if (line === '') {
           if (eventName) {
-            const parsed = JSON.parse(data || '{}') as { queryId: string; message?: string };
+            const parsed = JSON.parse(data.trim() || '{}') as { queryId: string; message?: string };
+            if (eventId) this.lastEventId = eventId;
             this.handlers.onEvent({ event: eventName as SseEventType, data: { queryId: parsed.queryId ?? this.queryId, message: parsed.message } });
             if (terminalEvents.has(eventName)) {
               this.close();
@@ -77,6 +86,7 @@ export class SseStream {
           }
           eventName = '';
           data = '';
+          eventId = '';
         }
       }
     }

@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import type { SseEventType } from '@/lib/sse/stream';
 
 const STAGES: { event: SseEventType; label: string }[] = [
+  { event: 'query.queued', label: 'Queued securely' },
   { event: 'query.authenticated', label: 'Authenticating' },
   { event: 'query.retrieving', label: 'Searching connected sources' },
   { event: 'query.reauthorising', label: 'Checking your current access' },
