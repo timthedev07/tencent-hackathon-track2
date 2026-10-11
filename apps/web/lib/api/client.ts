@@ -44,6 +44,7 @@ export interface Citation { evidenceId: string; source: string; label: string | 
 export interface QueryResult {
   queryId: string; status: string; answer: string | null;
   citations: Citation[]; partialSourceWarnings: { source: string; reason: string }[];
+  errorCode: string | null; errorMessage: string | null;
 }
 export interface EvidenceResponse {
   evidenceId: string; source?: string; title?: string | null;

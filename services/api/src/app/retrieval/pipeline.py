@@ -22,7 +22,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from uuid import UUID, uuid5
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.chain import append_event
@@ -68,6 +68,12 @@ from app.settings import get_settings
 
 logger = get_logger(__name__)
 
+_EMPTY_WORKSPACE_CODE = "NO_SEARCHABLE_CONTENT"
+_EMPTY_WORKSPACE_MESSAGE = (
+    "No searchable content is available in your connected workspaces yet. "
+    "Add content and wait for it to be indexed, then try again."
+)
+
 
 async def _decrypt_query(session: AsyncSession, query_id: UUID, user_id: UUID) -> str:
     run = (
@@ -88,6 +94,31 @@ async def _load_as_of(session: AsyncSession, query_id: UUID) -> datetime | None:
     return (
         await session.execute(select(QueryRun.as_of).where(QueryRun.id == query_id))
     ).scalar_one_or_none()
+
+
+async def _has_searchable_content(session: AsyncSession, tenant_id: UUID) -> bool:
+    """Return whether this tenant has any indexed content eligible for search.
+
+    This inexpensive check prevents an empty workspace from waiting on an
+    embedding provider before the pipeline can return its no-content result.
+    """
+    stmt = (
+        select(Chunk.id)
+        .join(ObjectVersion, Chunk.object_version_id == ObjectVersion.id)
+        .join(SourceObject, ObjectVersion.source_object_id == SourceObject.id)
+        .where(
+            Chunk.tenant_id == tenant_id,
+            SourceObject.tenant_id == tenant_id,
+            SourceObject.is_queryable.is_(True),
+            SourceObject.is_deleted.is_(False),
+            SourceObject.current_version_id == ObjectVersion.id,
+            ObjectVersion.ingestion_status == "active",
+            ObjectVersion.retired_at.is_(None),
+            or_(Chunk.embedding.isnot(None), Chunk.tsv.isnot(None)),
+        )
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
 async def _load_authorised_text(
@@ -181,6 +212,7 @@ async def _audit_commit(
     status: str,
     partial_sources: list[str] | None = None,
     compiled_context: CompiledContext | None = None,
+    error_code: str | None = None,
 ) -> None:
     cm = get_credential_manager()
     settings = get_settings()
@@ -197,6 +229,7 @@ async def _audit_commit(
                 as_of=run.as_of,
             )
         run.status = status
+        run.error_code = error_code
         run.answer_ciphertext = encrypted_answer.ciphertext
         run.completed_at = datetime.now(UTC)
         run.latency_ms = int((datetime.now(UTC) - run.started_at).total_seconds() * 1000)
@@ -279,6 +312,11 @@ async def _audit_commit(
         QueryStatus.DENIED.value: "No authorised evidence was available",
         QueryStatus.FAILED.value: "The query could not be completed",
     }.get(status, "Answer completed")
+    terminal_payload = {"message": terminal_message, "status": status}
+    if error_code is not None:
+        terminal_payload["errorCode"] = error_code
+    if error_code == _EMPTY_WORKSPACE_CODE:
+        terminal_payload["message"] = _EMPTY_WORKSPACE_MESSAGE
 
     await append_event(
         session=session,
@@ -301,7 +339,7 @@ async def _audit_commit(
         tenant_id,
         query_id,
         terminal_event,
-        {"message": terminal_message, "status": status},
+        terminal_payload,
         status=status,
     )
 
@@ -322,6 +360,7 @@ async def _audit_terminal_result(
     object_source_map: dict[UUID, Source] | None = None,
     partial_sources: list[str] | None = None,
     reranked: list[RerankedEvidence] | None = None,
+    error_code: str | None = None,
 ) -> None:
     factory = get_session_factory()
     async with factory() as session:
@@ -337,11 +376,14 @@ async def _audit_terminal_result(
             status=status,
             partial_sources=partial_sources,
             compiled_context=None,
+            error_code=error_code,
         )
         await session.commit()
 
 
-async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
+async def run_query_pipeline(  # noqa: PLR0911
+    query_id: UUID, user: AuthenticatedUser
+) -> dict:
     settings = get_settings()
     start_time = time.monotonic()
     factory = get_session_factory()
@@ -368,6 +410,29 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
             event_type="query.retrieving",
             message="Searching connected sources",
         )
+
+        async with factory() as session:
+            await set_tenant_context(session, user.tenant_id)
+            has_searchable_content = await _has_searchable_content(session, user.tenant_id)
+
+        if not has_searchable_content:
+            await _audit_terminal_result(
+                query_id=query_id,
+                tenant_id=user.tenant_id,
+                answer=_terminal_answer(_EMPTY_WORKSPACE_MESSAGE),
+                status=QueryStatus.DENIED.value,
+                error_code=_EMPTY_WORKSPACE_CODE,
+            )
+            logger.info(
+                "Query completed without indexed content",
+                query_id=str(query_id),
+                outcome=_EMPTY_WORKSPACE_CODE,
+            )
+            return {
+                "status": "denied",
+                "query_id": str(query_id),
+                "error_code": _EMPTY_WORKSPACE_CODE,
+            }
 
         gateway = get_model_gateway()
         query_embedding = await gateway.embed([query_text], settings.EMBEDDING_MODEL)
@@ -621,4 +686,4 @@ async def run_query_pipeline(query_id: UUID, user: AuthenticatedUser) -> dict:
                 message="The query could not be completed.",
             )
         QUERY_LATENCY.labels(status="failed").observe(time.monotonic() - start_time)
-        return {"status": "failed", "query_id": str(query_id)}
+        return {"status": "failed", "query_id": str(query_id), "error_code": "PIPELINE_ERROR"}

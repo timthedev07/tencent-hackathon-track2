@@ -35,6 +35,18 @@ from app.persistence.session import get_session_factory, set_tenant_context
 logger = get_logger(__name__)
 
 
+def _failure_message(query_id: UUID, error_code: str | None) -> str:
+    """Return a safe, actionable failure message without exposing source text."""
+    messages = {
+        "PIPELINE_ERROR": "The search pipeline failed. Check the server log for this query ID.",
+        "PIPELINE_TASK_ERROR": (
+            "The search task stopped unexpectedly. Check the server log for this query ID."
+        ),
+    }
+    message = messages.get(error_code or "", "The search could not be completed.")
+    return f"{message} Reference: {query_id}."
+
+
 async def create_query_run(
     user_id: UUID,
     tenant_id: UUID,
@@ -237,4 +249,8 @@ async def get_result(query_id: UUID, user: AuthenticatedUser) -> dict:
             "claims": claims,
             "citations": citations,
             "partialSourceWarnings": partial_warnings,
+            "errorCode": run.error_code,
+            "errorMessage": (
+                _failure_message(query_id, run.error_code) if run.status == "failed" else None
+            ),
         }

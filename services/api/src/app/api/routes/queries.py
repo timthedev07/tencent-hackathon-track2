@@ -7,17 +7,34 @@ GET /v1/queries/{queryId} — final result
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sse_starlette.event import JSONServerSentEvent
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.dependencies.auth import get_authenticated_user
 from app.auth.oidc import AuthenticatedUser
+from app.observability.logging import bind_context
 
 router = APIRouter()
+
+
+async def _json_query_events(events: AsyncIterator[dict]) -> AsyncIterator[JSONServerSentEvent]:
+    """Encode query event payloads as JSON on the SSE wire."""
+    async for item in events:
+        data = item["data"]
+        if isinstance(data, str):
+            data = json.loads(data)
+        yield JSONServerSentEvent(
+            event=item["event"],
+            data=data,
+            id=item.get("id"),
+        )
 
 
 class CreateQueryRequest(BaseModel):
@@ -64,6 +81,8 @@ class QueryResult(BaseModel):
     claims: list[dict] = Field(default_factory=list)
     citations: list[Citation] = Field(default_factory=list)
     partialSourceWarnings: list[dict] = Field(default_factory=list)
+    errorCode: str | None = None
+    errorMessage: str | None = None
 
 
 @router.post("/queries", response_model=CreateQueryResponse, status_code=status.HTTP_201_CREATED)
@@ -86,6 +105,7 @@ async def create_query(
         query_text=request.query,
         as_of=request.as_of,
     )
+    bind_context(query_id=query_run["id"])
     try:
         enqueue_query_run(query_run["id"], user.tenant_id, user.user_id)
     except Exception:
@@ -114,10 +134,12 @@ async def stream_query_events(
     last_event_id: int | None = Header(default=None, alias="Last-Event-ID"),
 ) -> EventSourceResponse:
     """SSE stream for query progress events."""
+    bind_context(query_id=query_id)
     from app.domain.query_service import ensure_query_access, stream_events
 
     await ensure_query_access(query_id, user)
-    return EventSourceResponse(stream_events(query_id, user, after_sequence=last_event_id or 0))
+    events = stream_events(query_id, user, after_sequence=last_event_id or 0)
+    return EventSourceResponse(_json_query_events(events))
 
 
 @router.get("/queries/{query_id}", response_model=QueryResult)

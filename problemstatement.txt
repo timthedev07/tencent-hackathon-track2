@@ -1,0 +1,114 @@
+Introduction
+Modern enterprises are knowledge organisms. Every day, thousands of decisions,
+conversations, tickets, and documents are scattered across a constellation of platforms —
+Confluence for wikis and documentation, Jira for issue tracking and project management, Slack
+for real-time team communication, and Google Drive for file storage and collaboration.
+The problem is not a lack of information. It is the opposite: an overwhelming abundance of
+information that no single person can hold in their head, no single search can surface, and no
+single access control model governs. An engineer answering an incident at 3 AM may need to
+cross-reference a Jira ticket, three Slack threads, a Confluence runbook, and a Google Drive
+postmortem — each living in a different system with different permissions, different formats,
+and different freshness.
+This challenge asks you to build the connective tissue: an Internal Brain — an AI-augmented
+system that unifies context across these four platforms, answers natural-language questions
+grounded in that unified context, and does so under the uncompromising constraint that every
+piece of information it exposes respects the original platform’s access controls, with full
+auditability of who asked what, what was retrieved, and what was answered.
+This is not a chatbot bolted onto search. It is a governed, permission-aware knowledge fabric
+with an LLM reasoning layer on top — the kind of system that enterprises actually need, and
+that most current “AI assistants” conspicuously fail to deliver because they ignore access
+control and auditability entirely.
+Problem Statement
+Consider a mid-to-large technology company, Company A, with the following footprint:
+Confluence: 50+ spaces, 12,000+ pages, granular space-level and page-level permissions
+(some spaces restricted to specific teams, individual pages restricted to named individuals).
+Jira: 30+ projects, custom role schemes per project, issue-level security (e.g., security-sensitive
+bugs visible only to the security team).
+Slack: 200+ channels across multiple workspaces, including private channels and DMs;
+message retention policies; thread context that is critical but deeply nested.
+Google Drive: Shared drives and personal drives, file-level and folder-level sharing
+(view/comment/edit), external sharing enabled for some folders.
+Company A’s employees waste an estimated 30% of their workweek searching for information,
+asking colleagues “where is the doc for X,” or re-asking questions that were answered six
+months ago in a Slack thread they can’t find. The CTO wants an AI assistant that can answer
+questions like:
+“What was the root cause of the payment outage last quarter, and what follow-up tickets were
+created?”
+“Summarize the design discussion around the new auth service from last sprint’s Slack threads
+and link the Confluence decision doc.”
+But the CTO immediately raises the hard question: If this AI assistant can read everything, can
+it also leak everything? A junior engineer asking “show me all security vulnerabilities” should
+not receive pages from a Confluence space restricted to the security team. An external
+contractor in a Slack workspace should not be able to query internal Jira issues. Every answer
+must be scoped to what the asker is actually authorized to see, and there must be a tamper￾evident record of every retrieval and every answer.
+Challenge
+Build the Internal Brain that delivers unified, AI-augmented answers across all four platforms
+while enforcing Role-Based Access Control (RBAC) end-to-end, with security logging and a full
+audit trail. This Internal Brain should be able to:
+• Heterogeneous Source Integration: Each platform has its own API, its own data model, its
+own pagination, its own rate limits, and its own permission semantics. Confluence
+permissions are space+page based. Jira permissions are project-role-issue based. Slack
+permissions are channel-membership based. Google Drive permissions are file-folder-user
+based. You must build a unified ingestion and retrieval layer that does not flatten these
+differences away — because flattening them means breaking access control.
+• Permission-Aware Retrieval: Most “AI over your data” demos retrieve documents into an
+LLM context with no regard for who is asking. That is a non-starter here. The retrieval
+pipeline must:
+o Know the identity and roles/permissions of the asker at query time.
+o Filter candidate documents before they reach the LLM, so the model never even sees
+content the user is not allowed to see (preventing both answer leakage and prompt￾injection-via-retrieved-content attacks).
+o Handle permission changes: if a user’s access to a Confluence page is revoked between
+ingestion and query, the system must not serve stale-permitted content.
+• Context Assembly Across Platforms: A single answer may require stitching context from
+multiple sources — a Jira ticket, its linked Slack discussion, the related Confluence doc, and
+an attached GDrive file. You must design a retrieval strategy that can fan out across
+platforms, rank cross-platform results, and assemble a coherent context window for the LLM
+— all while respecting per-platform permissions on every constituent piece.
+• Security Logging & Audit Trail: Every meaningful action must be recorded in a way that is:
+o Tamper-evident — an auditor can detect if a log entry was modified or deleted.
+o Complete — captures who (identity), what (query + retrieved doc IDs + final answer), when
+(timestamp), and the authorization decision (allowed/denied per document).
+o Queryable — an admin or compliance officer can ask “what did user X access last week” or
+“who retrieved this sensitive doc.”
+• LLM Safety in a Permissioned World: Even if retrieval filters correctly, the LLM might
+hallucinate, paraphrase restricted content it saw in training, or leak information through
+confident confabulation. The solution must mitigate the risk that the model “fills in” content it
+was not actually given.
+What the Solution Should Solve
+Your solution must demonstrably solve the following scenarios. Each should be accompanied
+by a worked example in your submission.
+1. Unified Natural-Language Query: A user asks a question in natural language. The system
+determines which platforms are relevant, retrieves permission-filtered context from each, and
+returns a single grounded answer with citations (links back to source
+documents/tickets/messages/files).
+Example: A backend engineer asks, “What’s the status of the database migration project and
+were there any blockers raised in Slack last week?” The system > pulls Jira issues from the
+migration project, Slack messages from relevant channels the engineer is a member of, and
+returns a synthesized answer with citations > — omitting any Slack threads from private
+channels the engineer is not in.
+2. Data Freshness: The system must return answers grounded in relatively recent data, not
+stale snapshots. When a document, ticket, message, or file is created or updated in any source
+platform (Confluence, Jira, Slack, Google Drive), it must become available in the Internal
+Brain's answers within a bounded, predictable window — on the order of minutes to ~1 hour —
+so that the assistant never silently serves outdated content as if it were current. The data must
+not be stale.
+Example: An on-call engineer asks at 2:05 PM, "What's the latest runbook for the payment￾service incident?" The runbook owner pushed a critical update to the Confluence page at 1:00
+PM — adding a new failover step. The system must surface the updated runbook, including the
+new step, not a pre-update version cached from the morning's ingestion. Had the system
+served the stale version, the engineer would have missed a failover action that could prolong
+the outage.
+3. Correct Permission Enforcement (The Negative Cases): The system must refuse or filter
+when the asker lacks permission, without revealing that the restricted content exists (to avoid a
+metadata side-channel).
+• Example: A contractor asks, “Show me the security incident report from the Q3 breach.” The
+report lives in a Confluence space restricted to the security team. The system returns an
+answer that does not contain the report’s contents — and does not confirm or deny the
+report’s existence beyond what the user’s permissions already imply.
+4. Live Permission Change Handling: When a user’s access is revoked (e.g., removed from
+a Slack channel, a Confluence page is restricted), subsequent queries must reflect that
+change. The system must not serve content the user can no longer access.
+5. Audit Inquiry: A compliance officer can query the audit trail to reconstruct what any user
+asked, what was retrieved on their behalf, and what was answered — with timestamps and
+authorization decisions.
+• Example: “Show me everything user ‘jdoe’ accessed related to the ‘payment-gateway’
+Confluence space in the last 30 days.”

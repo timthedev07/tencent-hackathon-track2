@@ -34,6 +34,10 @@ def configure_tracing() -> Any:
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     settings = get_settings()
+    endpoint = settings.OTEL_EXPORTER_OTLP_ENDPOINT.strip()
+    if not endpoint:
+        return None
+
     resource = Resource.create(
         {
             "service.name": "enterprise-ai-assistant",
@@ -44,7 +48,7 @@ def configure_tracing() -> Any:
 
     provider = TracerProvider(resource=resource)
     exporter = OTLPSpanExporter(
-        endpoint=f"{settings.APP_BASE_URL}/v1/traces",
+        endpoint=endpoint,
         timeout=5,
     )
     provider.add_span_processor(BatchSpanProcessor(exporter))

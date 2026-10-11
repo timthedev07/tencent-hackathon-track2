@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from time import perf_counter
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,12 +21,20 @@ from app.api.routes.knowledge_audit import router as knowledge_audit_router
 from app.api.routes.oauth import router as oauth_router
 from app.api.routes.queries import router as queries_router
 from app.api.routes.webhooks import router as webhooks_router
-from app.observability.logging import configure_logging, get_logger
+from app.observability.logging import (
+    bind_context,
+    clear_context,
+    configure_logging,
+    get_logger,
+    request_id_from_header,
+)
 from app.observability.metrics import MetricsMiddleware, metrics_app
 from app.observability.tracing import configure_tracing, instrument_app
 from app.settings import get_settings
 
 logger = get_logger(__name__)
+HTTP_CLIENT_ERROR = 400
+HTTP_SERVER_ERROR = 500
 
 
 @asynccontextmanager  # type: ignore[misc]
@@ -34,8 +43,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[arg-typ
     configure_logging()
     get_settings().validate_for_startup()
     try:
-        configure_tracing()
-        instrument_app(app)
+        if configure_tracing() is not None:
+            instrument_app(app)
     except Exception:
         logger.debug("Tracing setup skipped (optional in development)", exc_info=True)
     yield
@@ -52,6 +61,53 @@ def create_app() -> FastAPI:
 
     settings = get_settings()
 
+    @app.middleware("http")
+    async def request_logging(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Emit one correlated, safe lifecycle event for every HTTP request."""
+        clear_context()
+        request_id = request_id_from_header(request.headers.get("X-Request-ID"))
+        bind_context(
+            request_id=request_id,
+            http_method=request.method,
+            http_path=request.url.path,
+        )
+        started = perf_counter()
+        response: Response | None = None
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception(
+                "HTTP request failed",
+                status_code=HTTP_SERVER_ERROR,
+                latency_ms=round((perf_counter() - started) * 1000, 2),
+            )
+            raise
+        else:
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            if response is not None:
+                latency_ms = round((perf_counter() - started) * 1000, 2)
+                route_template = getattr(request.scope.get("route"), "path", None)
+                if route_template:
+                    bind_context(http_route=route_template)
+                log_method = (
+                    logger.error
+                    if response.status_code >= HTTP_SERVER_ERROR
+                    else logger.warning
+                    if response.status_code >= HTTP_CLIENT_ERROR
+                    else logger.info
+                )
+                log_method(
+                    "HTTP request completed",
+                    status_code=response.status_code,
+                    latency_ms=latency_ms,
+                )
+            clear_context()
+
     # ── CORS ──────────────────────────────────────────────────────
     app.add_middleware(
         CORSMiddleware,
@@ -59,6 +115,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
+        expose_headers=["X-Request-ID"],
     )
 
     # ── Metrics ────────────────────────────────────────────────────
