@@ -5,7 +5,7 @@
 
 ### Frontend (apps/web)
 - **Prettier** with the root `.prettierrc.json` configuration.
-- Run: `yarn prettier --check .` (CI) / `yarn prettier --write .` (local)
+- Run: `npm run format:check` (CI) / `npm run format` (local)
 - No exceptions for formatting — the formatter is authoritative.
 
 ### Backend (services/api, services/worker)
@@ -17,7 +17,7 @@
 
 ### Frontend
 - **ESLint** with Next.js recommended config.
-- Run: `yarn lint` (local) / checked in CI.
+- Run: `npm run lint` (local) / checked in CI.
 - `eslint-config-next` as base; no `any` types allowed; no unused variables.
 
 ### Backend
@@ -85,7 +85,7 @@ Exception: Third-party library API names (e.g., `color` in CSS/Tailwind) remain 
 
 ## 5. Package Managers
 - Python: `uv` exclusively. `pyproject.toml` + `uv.lock` committed.
-- Frontend: `yarn` exclusively (NOT npm). `yarn.lock` committed.
+- Frontend: `npm` exclusively. `package-lock.json` committed.
 - Never use `pip install` directly in CI; always `uv sync` first.
 
 ## 6. Dependency Rule

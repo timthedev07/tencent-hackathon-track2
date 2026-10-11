@@ -48,26 +48,26 @@ reset:
 # ── OpenAPI / Frontend contracts ────────────────────────────────────
 openapi:
 	uv run python scripts/generate_openapi.py
-	cd apps/web && yarn generate-types
+	cd apps/web && npm run generate-types
 
 # ── Frontend ───────────────────────────────────────────────────────
 frontend-install:
-	cd apps/web && yarn install
+	cd apps/web && npm ci
 
 frontend-dev:
-	cd apps/web && yarn dev
+	cd apps/web && npm run dev
 
 frontend-build:
-	cd apps/web && yarn build
+	cd apps/web && npm run build
 
 frontend-lint:
-	cd apps/web && yarn lint
+	cd apps/web && npm run lint
 
 frontend-test:
-	cd apps/web && yarn test
+	cd apps/web && npm test
 
 e2e:
-	cd apps/web && yarn e2e
+	cd apps/web && npm run e2e
 
 # ── Docker ──────────────────────────────────────────────────────────
 docker-up:

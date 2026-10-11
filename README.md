@@ -8,6 +8,9 @@ Permission-safe cross-platform enterprise AI assistant spanning Confluence, Jira
 
 ## Quick Start
 
+Use an LTS Node.js release supported by the frontend toolchain: Node 22.22.2+
+within the Node 22 line, Node 24.15.0+, or Node 26+.
+
 ```bash
 # 1. Install dependencies
 make install
@@ -36,7 +39,7 @@ uv run celery -A worker.celery_app worker --loglevel=info
 | Command | Description |
 |---|---|
 | `make install` | Install Python dependencies via uv |
-| `make frontend-install` | Install frontend dependencies via yarn |
+| `make frontend-install` | Install frontend dependencies via npm |
 | `make dev` | Start FastAPI dev server |
 | `make frontend-dev` | Start Next.js dev server |
 | `make lint` | Lint backend (ruff) |
@@ -66,7 +69,7 @@ See [`docs/standards.md`](docs/standards.md) for the full set of enforced standa
 - Prettier, ESLint, Ruff, Pyright strict
 - Security: SQL injection prevention, CSRF, envelope encryption, INSERT-only audit
 - British English spelling consistency
-- Package managers: uv (Python), yarn (frontend)
+- Package managers: uv (Python), npm (frontend)
 
 ## Implementation Plan
 

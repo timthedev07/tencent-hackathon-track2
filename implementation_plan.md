@@ -16,7 +16,7 @@ Permission-safe cross-platform enterprise AI assistant spanning Confluence, Jira
 
 - **Backend**: Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 (async) + asyncpg, Celery, Redis, PostgreSQL + pgvector, Alembic, structlog, OpenTelemetry
 - **Frontend**: Next.js (App Router), TypeScript, Tailwind, shadcn/ui, Zod, openapi-typescript, Playwright
-- **Tooling**: uv (Python), yarn (frontend), Ruff, Pyright strict, pytest, Testcontainers, respx
+- **Tooling**: uv (Python), npm (frontend), Ruff, Pyright strict, pytest, Testcontainers, respx
 
 ## Database Schema (17 tables — all with RLS)
 
