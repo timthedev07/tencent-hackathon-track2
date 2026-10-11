@@ -1,8 +1,8 @@
-'use client';
+'use client'
 
-import { CheckCircle2, Loader2 } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import type { SseEventType } from '@/lib/sse/stream';
+import { CheckCircle2, Loader2 } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import type { SseEventType } from '@/lib/sse/stream'
 
 const STAGES: { event: SseEventType; label: string }[] = [
   { event: 'query.queued', label: 'Queued securely' },
@@ -13,22 +13,22 @@ const STAGES: { event: SseEventType; label: string }[] = [
   { event: 'query.generating', label: 'Generating answer' },
   { event: 'query.verifying', label: 'Verifying citations' },
   { event: 'query.auditing', label: 'Saving audit record' },
-];
+]
 
 interface QueryProgressProps {
-  currentStage: SseEventType | null;
-  isComplete: boolean;
-  hasFailed: boolean;
+  currentStage: SseEventType | null
+  isComplete: boolean
+  hasFailed: boolean
 }
 
 export function QueryProgress({ currentStage, isComplete, hasFailed }: QueryProgressProps) {
-  const currentIndex = currentStage ? STAGES.findIndex((s) => s.event === currentStage) : -1;
+  const currentIndex = currentStage ? STAGES.findIndex((s) => s.event === currentStage) : -1
 
   return (
     <div className="flex flex-col gap-2">
       {STAGES.map((stage, index) => {
-        const isDone = isComplete || index < currentIndex;
-        const isActive = index === currentIndex && !isComplete && !hasFailed;
+        const isDone = isComplete || index < currentIndex
+        const isActive = index === currentIndex && !isComplete && !hasFailed
         return (
           <div
             key={stage.event}
@@ -49,8 +49,8 @@ export function QueryProgress({ currentStage, isComplete, hasFailed }: QueryProg
             )}
             <span>{stage.label}</span>
           </div>
-        );
+        )
       })}
     </div>
-  );
+  )
 }

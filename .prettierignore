@@ -4,4 +4,5 @@ dist/
 build/
 coverage/
 packages/contracts/generated/
+apps/web/next-env.d.ts
 *.md

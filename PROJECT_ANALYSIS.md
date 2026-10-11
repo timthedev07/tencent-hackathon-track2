@@ -276,6 +276,7 @@ The following checks were run against this snapshot:
 | Ruff lint | **Fail:** 44 findings, mostly magic HTTP constants and long lines in the isolated pipeline test. |
 | Pyright strict | **Fail:** 48 errors and 582 warnings. The configuration also reports `$schema` as unrecognised. |
 | Frontend TypeScript | **Pass:** `tsc --noEmit`. |
+| Frontend formatting | **Pass:** repository ignore rules exclude generated Next.js output and all source files match Prettier. |
 | Frontend ESLint | **Pass:** clean npm-installed dependency tree. |
 | Frontend tests | **Pass:** two SSE parsing and terminal-event tests. |
 | Frontend production build | **Pass:** local build and clean Node 22 Docker build. |
