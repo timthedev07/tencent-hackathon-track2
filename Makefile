@@ -1,4 +1,4 @@
-.PHONY: install dev lint typecheck test test-integration test-security \
+.PHONY: install dev worker lint typecheck test test-integration test-security \
        format migrate seed reset openapi frontend-install frontend-dev \
        frontend-build frontend-lint frontend-test e2e docker-up docker-down \
        clean
@@ -9,6 +9,9 @@ install:
 
 dev:
 	uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+worker:
+	uv run celery -A worker.celery_app worker --loglevel=info --concurrency=2
 
 lint:
 	uv run ruff check .

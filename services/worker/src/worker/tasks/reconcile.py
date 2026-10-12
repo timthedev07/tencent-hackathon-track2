@@ -18,9 +18,9 @@ logger = get_logger(__name__)
 @celery_app.task(name="worker.tasks.reconcile.run_reconciliation")  # type: ignore[misc]
 def run_reconciliation(source: str | None = None) -> dict[str, Any]:
     """Run reconciliation for all source connections."""
-    import asyncio
+    from worker.async_runner import run_async
 
-    return asyncio.run(_run_reconciliation(source))
+    return run_async(_run_reconciliation(source))
 
 
 async def _run_reconciliation(source_filter: str | None = None) -> dict[str, Any]:

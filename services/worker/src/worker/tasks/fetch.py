@@ -26,9 +26,9 @@ logger = get_logger(__name__)
 )
 def fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
     """Fetch a source object and enqueue normalisation."""
-    import asyncio
+    from worker.async_runner import run_async
 
-    return asyncio.run(_fetch_source_object(message))
+    return run_async(_fetch_source_object(message))
 
 
 async def _fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
@@ -42,7 +42,9 @@ async def _fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
     tenant_id = _required(message, "tenantId")
     connection_id = _required(message, "connectionId")
     external_id = _required(message, "externalObjectId")
-    context = await load_ingestion_context(tenant_id, connection_id)
+    user_id = _optional_string(message, "userId")
+    run_id = _optional_string(message, "backfillRunId")
+    context = await load_ingestion_context(tenant_id, connection_id, user_id)
     source = context.connection.source
     logger.info("Fetching source object", source=source.value)
     try:
@@ -53,6 +55,7 @@ async def _fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
         )
     except NotFoundError:
         await _mark_deleted(tenant_id, connection_id, source.value, external_id)
+        await _complete_run_item(tenant_id, run_id)
         return {"status": "not_found", "source": source.value}
     except ConnectorError as exc:
         if exc.outcome in {
@@ -61,12 +64,14 @@ async def _fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
             ConnectorOutcome.PERMANENT_ERROR,
         }:
             await _mark_not_queryable(tenant_id, connection_id, source.value, external_id)
+            await _complete_run_item(tenant_id, run_id, failed=True)
             return {"status": "not_queryable", "source": source.value}
         raise
 
     if result.outcome != ConnectorOutcome.SUCCESS:
         if result.outcome == ConnectorOutcome.NOT_FOUND:
             await _mark_deleted(tenant_id, connection_id, source.value, external_id)
+            await _complete_run_item(tenant_id, run_id)
             return {"status": "not_found", "source": source.value}
         raise ValueError(f"SOURCE_FETCH_{result.outcome.value.upper()}")
 
@@ -77,6 +82,7 @@ async def _fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
         result,
     )
     if duplicate:
+        await _complete_run_item(tenant_id, run_id)
         return {"status": "duplicate", "source": source.value}
     next_message = {
         "tenantId": tenant_id,
@@ -87,6 +93,10 @@ async def _fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
         "sourceRevision": result.source_revision,
         "source": source.value,
     }
+    if user_id:
+        next_message["userId"] = user_id
+    if run_id:
+        next_message["backfillRunId"] = run_id
     from worker.tasks.normalise import normalise_object
 
     normalise_object.delay(next_message)  # type: ignore[union-attr]
@@ -98,6 +108,21 @@ def _required(message: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"INGESTION_MESSAGE_{key.upper()}_MISSING")
     return value
+
+
+def _optional_string(message: dict[str, Any], key: str) -> str | None:
+    value = message.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"INGESTION_MESSAGE_{key.upper()}_INVALID")
+    return value
+
+
+async def _complete_run_item(tenant_id: str, run_id: str | None, *, failed: bool = False) -> None:
+    from worker.tasks.backfill_progress import complete_backfill_item
+
+    await complete_backfill_item(tenant_id, run_id, failed=failed)
 
 
 async def _persist_fetched(
@@ -142,6 +167,8 @@ async def _persist_fetched(
             )
         )
         if existing is not None:
+            if existing.valid_from is None and result.last_modified_at is not None:
+                existing.valid_from = result.last_modified_at
             await session.commit()
             return str(source_object.id), str(existing.id), True
         version = ObjectVersion(
@@ -151,6 +178,7 @@ async def _persist_fetched(
             normalised_content=result.content or "",
             normalised_title=result.title,
             content_hash=now_hash,
+            valid_from=result.last_modified_at,
             ingestion_status=IngestionStatus.FETCHED.value,
         )
         session.add(version)

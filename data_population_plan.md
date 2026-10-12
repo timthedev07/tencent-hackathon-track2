@@ -64,12 +64,12 @@ Use a separate browser profile for each application user and provider identity. 
    make migrate
    ```
 
-3. Start the API, web application and worker in separate terminals using the repository’s normal commands:
+3. Start the API and web application in separate terminals, and start the Compose worker:
 
    ```bash
    make dev
    make frontend-dev
-   uv run celery -A worker.celery_app worker --loglevel=info
+   docker compose up -d --build worker
    ```
 
 4. Confirm that the API, web application, PostgreSQL, Redis and worker are healthy before creating source data.
@@ -383,31 +383,42 @@ Check for the Jira cause and follow-up, the Slack mitigation, the Confluence run
 
 ## 8. Start ingestion and verify the stored data
 
-1. Find the connected source rows:
+1. In Relay, open **Settings** and, as `alice`, select **Sync now** for Atlassian, Slack and Google Drive. The button queues the initial import under Alice’s delegated provider identity. It shows **Import queued** when the worker has accepted the request. When processing finishes, select **Refresh imported items** to view up to three authorised Confluence pages, Jira tickets, Slack messages and Drive files for the connected sources.
+
+2. To inspect the source rows or queue a backfill from the terminal instead, find the connected source rows:
 
    ```bash
    docker compose exec -T postgres psql -U assistant -d assistant \
-     -c "SELECT id, tenant_id, source, display_name FROM source_connections WHERE status = 'connected' ORDER BY source;"
+     -c "SELECT id, tenant_id, source, display_name, external_workspace_id FROM source_connections WHERE status = 'connected' ORDER BY source;"
    ```
 
-2. Enqueue one backfill for each returned row, replacing the placeholders:
+   Check which application user owns the newest credential for each row:
 
    ```bash
-   docker compose exec worker python -c \
-     'from worker.tasks.backfill import run_backfill; run_backfill.delay("CONNECTION_ID", "TENANT_ID")'
+   docker compose exec -T postgres psql -U assistant -d assistant \
+     -c "SELECT DISTINCT ON (sc.id) sc.source, sc.display_name, sc.external_workspace_id, u.id AS user_id, u.oidc_subject AS indexing_user FROM source_connections sc JOIN encrypted_credentials ec ON ec.source_connection_id = sc.id JOIN users u ON u.id = ec.user_id WHERE sc.status = 'connected' AND ec.credential_type <> 'service_account' ORDER BY sc.id, ec.updated_at DESC;"
    ```
 
-   Run this once for Slack, once for Google Drive, and twice for the Atlassian site: once for Confluence and once for Jira.
+   For each real demo source row, `indexing_user` must be `alice`. If it is Bob or Carol, reconnect Alice to that provider in Section 7 before continuing. Skip old placeholder or duplicate connections that do not point to the demo workspace.
 
-3. Watch the worker:
+3. Enqueue one backfill for each of the four real demo source rows, replacing the placeholders with its ID, tenant ID and Alice’s user ID:
+
+   ```bash
+   docker compose exec -T worker uv run python -c \
+     'from worker.tasks.backfill import run_backfill; run_backfill.delay("CONNECTION_ID", "TENANT_ID", "ALICE_USER_ID")'
+   ```
+
+   Run this once for Slack, once for Google Drive, and twice for the real Atlassian site: once for Confluence and once for Jira.
+
+4. Watch the worker:
 
    ```bash
    docker compose logs -f worker
    ```
 
-4. If a source returns another page or cursor, continue until the hand-authored corpus is complete. Do not assume that OAuth completion starts ingestion.
-5. Before using the UI, verify that each expected object has an active version, chunks, ACL/principal records, canonical URL and source revision. Also verify Slack replies, Jira issue descriptions and Drive text extraction.
-6. Verify the restricted item as Alice and Bob before running the demo. An object count alone is not proof of correct ACLs.
+5. If a source returns another page or cursor, continue until the hand-authored corpus is complete. Do not assume that OAuth completion starts ingestion.
+6. Before using the UI, verify that each expected object has an active version, chunks, ACL/principal records, canonical URL and source revision. Also verify Slack replies, Jira issue descriptions and Drive text extraction.
+7. Verify the restricted item as Alice and Bob before running the demo. An object count alone is not proof of correct ACLs.
 
 ## 9. Run the demo in this order
 

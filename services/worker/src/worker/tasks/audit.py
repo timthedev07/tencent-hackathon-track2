@@ -18,9 +18,9 @@ logger = get_logger(__name__)
 @celery_app.task(name="worker.tasks.audit.checkpoint_all_tenants")  # type: ignore[misc]
 def checkpoint_all_tenants() -> dict[str, Any]:
     """Create S3 checkpoints for every tenant's audit chain."""
-    import asyncio
+    from worker.async_runner import run_async
 
-    return asyncio.run(_checkpoint_all_tenants())
+    return run_async(_checkpoint_all_tenants())
 
 
 async def _checkpoint_all_tenants() -> dict[str, Any]:

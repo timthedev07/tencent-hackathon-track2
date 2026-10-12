@@ -53,6 +53,7 @@ def connector_for(source: Source) -> Connector:
 async def load_ingestion_context(
     tenant_id: str,
     connection_id: str,
+    user_id: str | None = None,
 ) -> IngestionContext:
     """Load one connected source and its latest user-scoped credential.
 
@@ -61,6 +62,7 @@ async def load_ingestion_context(
     """
     tenant_uuid = UUID(tenant_id)
     connection_uuid = UUID(connection_id)
+    user_uuid = UUID(user_id) if user_id else None
     factory = get_session_factory()
     async with factory() as session:
         await set_tenant_context(session, tenant_uuid)
@@ -81,6 +83,11 @@ async def load_ingestion_context(
                 EncryptedCredential.tenant_id == tenant_uuid,
                 EncryptedCredential.user_id.is_not(None),
                 EncryptedCredential.credential_type != "service_account",
+                *(
+                    [EncryptedCredential.user_id == user_uuid]
+                    if user_uuid is not None
+                    else []
+                ),
             )
             .order_by(EncryptedCredential.updated_at.desc())
         )

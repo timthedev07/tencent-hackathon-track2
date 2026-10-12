@@ -25,9 +25,9 @@ logger = get_logger(__name__)
 )
 def resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
     """Resolve ACL grants for an object and enqueue chunking."""
-    import asyncio
+    from worker.async_runner import run_async
 
-    return asyncio.run(_resolve_acl(message))
+    return run_async(_resolve_acl(message))
 
 
 async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
@@ -44,9 +44,11 @@ async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
     connection_id = _required(message, "connectionId")
     object_id = _required(message, "externalObjectId")
     version_id = _required(message, "objectVersionId")
+    user_id = _optional_string(message, "userId")
+    run_id = _optional_string(message, "backfillRunId")
     source = str(message.get("source", "unknown"))
     logger.info("Resolving ACL", source=source)
-    context = await load_ingestion_context(tenant_id, connection_id)
+    context = await load_ingestion_context(tenant_id, connection_id, user_id)
     try:
         result = await connector_for(context.connection.source).fetch_acl(
             context.connection,
@@ -57,9 +59,11 @@ async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
         if exc.outcome in {ConnectorOutcome.RATE_LIMITED, ConnectorOutcome.TRANSIENT_ERROR}:
             raise
         await _quarantine(tenant_id, version_id)
+        await _complete_run_item(tenant_id, run_id, failed=True)
         return {"status": "quarantined", "source": source}
     if result.outcome != ConnectorOutcome.SUCCESS:
         await _quarantine(tenant_id, version_id)
+        await _complete_run_item(tenant_id, run_id, failed=True)
         return {"status": "quarantined", "source": source}
 
     factory = get_session_factory()
@@ -72,6 +76,7 @@ async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
             )
         )
         if version is None:
+            await _complete_run_item(tenant_id, run_id, failed=True)
             return {"status": "missing", "source": source}
         source_object = await session.scalar(
             select(SourceObject).where(
@@ -80,6 +85,7 @@ async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
             )
         )
         if source_object is None:
+            await _complete_run_item(tenant_id, run_id, failed=True)
             return {"status": "missing", "source": source}
         await session.execute(delete(AclGrant).where(AclGrant.source_object_id == source_object.id))
         revision = str(message.get("sourceRevision") or version.source_revision)
@@ -140,6 +146,15 @@ def _required(message: dict[str, Any], key: str) -> str:
     return value
 
 
+def _optional_string(message: dict[str, Any], key: str) -> str | None:
+    value = message.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"INGESTION_MESSAGE_{key.upper()}_INVALID")
+    return value
+
+
 async def _quarantine(tenant_id: str, version_id: str) -> None:
     from uuid import UUID
 
@@ -160,3 +175,9 @@ async def _quarantine(tenant_id: str, version_id: str) -> None:
             if source_object is not None:
                 source_object.is_queryable = False
             await session.commit()
+
+
+async def _complete_run_item(tenant_id: str, run_id: str | None, *, failed: bool = False) -> None:
+    from worker.tasks.backfill_progress import complete_backfill_item
+
+    await complete_backfill_item(tenant_id, run_id, failed=failed)

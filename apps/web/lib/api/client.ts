@@ -87,6 +87,34 @@ export async function getConnections(): Promise<ConnectionsResponse> {
   return apiFetch<ConnectionsResponse>('/oauth/connections');
 }
 
+export interface BackfillRunStatus {
+  id: string; source: string; status: 'queued' | 'scanning' | 'processing' | 'completed' | 'failed';
+  discoveredCount: number; enqueuedCount: number; processedCount: number; failedCount: number;
+  errorMessage: string | null; startedAt: string | null; completedAt: string | null;
+}
+export interface ManualBackfillResponse { queuedSources: string[]; message: string; runs: BackfillRunStatus[] }
+
+export async function triggerManualBackfill(provider: 'atlassian' | 'slack' | 'google_drive'): Promise<ManualBackfillResponse> {
+  return apiFetch<ManualBackfillResponse>(`/oauth/connections/${provider}/backfill`, { method: 'POST' });
+}
+
+export async function getBackfillStatus(): Promise<{ runs: BackfillRunStatus[] }> {
+  return apiFetch<{ runs: BackfillRunStatus[] }>('/oauth/connections/backfill-status');
+}
+
+export interface BackfillPreviewItem {
+  source: string; title: string; url: string | null; updatedAt: string | null; snippet: string | null;
+}
+export interface BackfillPreviewResponse {
+  atlassian: { pages: BackfillPreviewItem[]; tickets: BackfillPreviewItem[] };
+  slack: BackfillPreviewItem[];
+  googleDrive: BackfillPreviewItem[];
+}
+
+export async function getBackfillPreviews(): Promise<BackfillPreviewResponse> {
+  return apiFetch<BackfillPreviewResponse>('/oauth/connections/previews');
+}
+
 export async function devLogin(subject: string): Promise<{ token: string; subject: string }> {
   const response = await fetch(`${API_URL}${API_PREFIX}/auth/dev-login`, {
     method: 'POST',

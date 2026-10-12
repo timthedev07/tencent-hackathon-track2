@@ -345,6 +345,52 @@ class IngestionCursor(Base):
     )
 
 
+class BackfillRun(Base):
+    """A user-visible lifecycle record for a manual source import."""
+
+    __tablename__ = "backfill_runs"
+
+    id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    source_connection_id: Mapped[str] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("source_connections.id"), nullable=False
+    )
+    requested_by_user_id: Mapped[str | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id")
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    discovered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    enqueued_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_backfill_runs_tenant_connection_created",
+            "tenant_id",
+            "source_connection_id",
+            "created_at",
+        ),
+        Index(
+            "ix_backfill_runs_tenant_requester_created",
+            "tenant_id",
+            "requested_by_user_id",
+            "created_at",
+        ),
+    )
+
+
 class WebhookDelivery(Base):
     __tablename__ = "webhook_deliveries"
 

@@ -22,6 +22,7 @@ TENANT_SCOPED_TABLES = [
     "principals",
     "acl_grants",
     "ingestion_cursors",
+    "backfill_runs",
     "webhook_deliveries",
     "query_runs",
     "access_decisions",

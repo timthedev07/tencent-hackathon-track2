@@ -14,9 +14,9 @@ logger = get_logger(__name__)
 @celery_app.task(name="worker.tasks.webhook.process_webhook_event")  # type: ignore[misc]
 def process_webhook_event(message: dict[str, Any]) -> dict[str, Any]:
     """Process a webhook delivery — fetch, normalise, chunk, embed."""
-    import asyncio
+    from worker.async_runner import run_async
 
-    return asyncio.run(_process_webhook_event(message))
+    return run_async(_process_webhook_event(message))
 
 
 async def _process_webhook_event(message: dict[str, Any]) -> dict[str, Any]:

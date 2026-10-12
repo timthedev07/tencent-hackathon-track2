@@ -20,9 +20,9 @@ logger = get_logger(__name__)
 @celery_app.task(name="worker.tasks.normalise.normalise_object")  # type: ignore[misc]
 def normalise_object(message: dict[str, Any]) -> dict[str, Any]:
     """Normalise a fetched object and enqueue ACL resolution."""
-    import asyncio
+    from worker.async_runner import run_async
 
-    return asyncio.run(_normalise_object(message))
+    return run_async(_normalise_object(message))
 
 
 async def _normalise_object(message: dict[str, Any]) -> dict[str, Any]:
@@ -33,6 +33,7 @@ async def _normalise_object(message: dict[str, Any]) -> dict[str, Any]:
     validate_message(message)
     tenant_id = _required(message, "tenantId")
     version_id = _required(message, "objectVersionId")
+    run_id = _optional_string(message, "backfillRunId")
     source = str(message.get("source", "unknown"))
     logger.info("Normalising object", source=source)
     factory = get_session_factory()
@@ -45,12 +46,14 @@ async def _normalise_object(message: dict[str, Any]) -> dict[str, Any]:
             )
         )
         if version is None:
+            await _complete_run_item(tenant_id, run_id, failed=True)
             return {"status": "missing", "source": source}
         content = _normalise_text(version.normalised_content)
         version.normalised_content = content
         if not content:
             version.ingestion_status = IngestionStatus.QUARANTINED.value
             await session.commit()
+            await _complete_run_item(tenant_id, run_id, failed=True)
             return {"status": "quarantined", "source": source}
         version.ingestion_status = IngestionStatus.NORMALISED.value
         await session.commit()
@@ -67,6 +70,21 @@ def _required(message: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"INGESTION_MESSAGE_{key.upper()}_MISSING")
     return value
+
+
+def _optional_string(message: dict[str, Any], key: str) -> str | None:
+    value = message.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"INGESTION_MESSAGE_{key.upper()}_INVALID")
+    return value
+
+
+async def _complete_run_item(tenant_id: str, run_id: str | None, *, failed: bool = False) -> None:
+    from worker.tasks.backfill_progress import complete_backfill_item
+
+    await complete_backfill_item(tenant_id, run_id, failed=failed)
 
 
 def _normalise_text(value: str | None) -> str:

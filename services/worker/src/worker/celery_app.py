@@ -66,6 +66,19 @@ celery_app = Celery(
     "enterprise_assistant",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
+    include=[
+        "worker.tasks.acl",
+        "worker.tasks.audit",
+        "worker.tasks.backfill",
+        "worker.tasks.backtests",
+        "worker.tasks.chunk",
+        "worker.tasks.deletions",
+        "worker.tasks.embed",
+        "worker.tasks.fetch",
+        "worker.tasks.normalise",
+        "worker.tasks.reconcile",
+        "worker.tasks.webhook",
+    ],
 )
 
 # ── Queue definitions (priority order) ──────────────────────────────
@@ -119,12 +132,3 @@ celery_app.conf.task_routes = {
     "worker.tasks.audit.*": {"queue": "audit_checkpoint"},
     "worker.tasks.backtests.*": {"queue": "audit_checkpoint"},
 }
-
-# Autodiscover tasks
-celery_app.autodiscover_tasks(
-    [
-        "worker.tasks",
-    ]
-)
-
-import worker.tasks  # type: ignore[unused-import]  # noqa: F401, E402

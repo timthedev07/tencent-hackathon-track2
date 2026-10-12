@@ -53,6 +53,13 @@ async def find_identity_link(
         return None
 
     if len(links) > 1:
+        # Older local data may contain a placeholder link alongside the real
+        # provider subject. Prefer the verified real identity before treating
+        # genuinely conflicting identities as ambiguous.
+        placeholders = {"atlassian-user", "google-user"}
+        real_links = [link for link in links if link.provider_subject_id not in placeholders]
+        if len(real_links) == 1:
+            return real_links[0]
         logger.warning(
             "Ambiguous identity links — source will be denied",
             user_id=str(user_id),
@@ -88,6 +95,7 @@ async def create_identity_link(
         existing.verified_at = now
         existing.verified_by = verified_by
         existing.status = "verified"
+        await _remove_placeholder_links(session, existing)
         await session.flush()
         logger.info(
             "Identity link refreshed",
@@ -101,7 +109,16 @@ async def create_identity_link(
         IdentityLink.user_id == user_id,
         IdentityLink.source_connection_id == source_connection_id,
     )
-    existing_user = (await session.execute(existing_user_stmt)).scalar_one_or_none()
+    existing_user_links = (await session.execute(existing_user_stmt)).scalars().all()
+    placeholders = {"atlassian-user", "google-user"}
+    existing_user = next(
+        (
+            link
+            for link in existing_user_links
+            if link.provider_subject_id in placeholders
+        ),
+        existing_user_links[0] if existing_user_links else None,
+    )
     if existing_user is not None:
         if (
             (
@@ -120,6 +137,8 @@ async def create_identity_link(
             existing_user.verified_at = now
             existing_user.verified_by = verified_by
             existing_user.status = "verified"
+            for stale_link in existing_user_links[1:]:
+                await session.delete(stale_link)
             await session.flush()
             logger.info(
                 "Identity link repaired",
@@ -149,6 +168,21 @@ async def create_identity_link(
         provider_subject_id=provider_subject_id,
     )
     return link
+
+
+async def _remove_placeholder_links(session: AsyncSession, current: IdentityLink) -> None:
+    """Remove stale pre-identity placeholders for the same user and source."""
+    placeholders = {"atlassian-user", "google-user"}
+    rows = await session.execute(
+        select(IdentityLink).where(
+            IdentityLink.user_id == current.user_id,
+            IdentityLink.source_connection_id == current.source_connection_id,
+            IdentityLink.id != current.id,
+            IdentityLink.provider_subject_id.in_(placeholders),
+        )
+    )
+    for row in rows.scalars().all():
+        await session.delete(row)
 
 
 async def is_compliance_user(session: AsyncSession, user_id: UUID) -> bool:
