@@ -202,6 +202,24 @@ async def google_callback(
     user = await _resolve_user_from_state(state)
     try:
         await complete_google_oauth(code, state, user)
+    except ValueError as exc:
+        error_messages = {
+            "GOOGLE_IDENTITY_UNAVAILABLE": (
+                "Google identity could not be verified. Please grant the requested "
+                "identity permissions and reconnect."
+            ),
+            "IDENTITY_LINK_ALREADY_CLAIMED": (
+                "This Google account is already linked to another Relay user."
+            ),
+            "IDENTITY_LINK_SUBJECT_MISMATCH": (
+                "This Relay user already has a different Google identity linked."
+            ),
+        }
+        error_code = str(exc)
+        logger.warning("Google OAuth callback failed", error=error_code)
+        return _redirect_to_settings(
+            "error", "google", error_messages.get(error_code, "OAuth connection failed")
+        )
     except Exception as exc:
         logger.warning("Google OAuth callback failed", error=str(exc))
         return _redirect_to_settings("error", "google", "OAuth connection failed")

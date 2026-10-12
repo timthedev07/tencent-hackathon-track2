@@ -330,6 +330,7 @@ For the consent screen and the app's authorisation request, use:
 
 | Scope URL | Description |
 |---|---|
+| `openid email profile` | Verify the Google account identity used for delegated access |
 | `https://www.googleapis.com/auth/drive.readonly` | View and download all Google Drive files (file content + metadata) |
 
 > Use `drive.readonly` (not `drive.metadata.readonly`) because the assistant needs to read file **content** for indexing and retrieval, not just metadata.

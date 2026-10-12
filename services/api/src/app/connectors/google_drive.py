@@ -42,7 +42,13 @@ async def start_google_oauth(user: AuthenticatedUser, oauth_state: str = "") -> 
     params = urlencode(
         {
             "client_id": settings.GOOGLE_CLIENT_ID,
-            "scope": "https://www.googleapis.com/auth/drive.readonly",
+            # Request OpenID identity scopes as well as Drive access. The
+            # stable `sub` returned by Google's UserInfo endpoint is required
+            # to keep delegated accounts separate between Relay users.
+            "scope": (
+                "openid email profile "
+                "https://www.googleapis.com/auth/drive.readonly"
+            ),
             "redirect_uri": settings.GOOGLE_REDIRECT_URI,
             "state": state_val,
             "response_type": "code",
@@ -86,23 +92,29 @@ async def complete_google_oauth(code: str, state: str, user: AuthenticatedUser) 
     access_token = token_data.get("access_token", "")
     if not refresh_token and not access_token:
         logger.warning("Google OAuth: no tokens returned")
-        return
+        raise ValueError("GOOGLE_IDENTITY_UNAVAILABLE")
 
-    # Determine provider subject from the userinfo API
-    provider_subject = "google-user"
+    # Determine the immutable provider subject from Google's OpenID UserInfo
+    # endpoint. Never fall back to a shared placeholder: that would make every
+    # Google account appear to be the same identity.
     workspace_id = "google-drive"
     try:
         async with httpx.AsyncClient() as client:
             res = await client.get(
-                "https://www.googleapis.com/oauth2/v2/userinfo",
+                "https://openidconnect.googleapis.com/v1/userinfo",
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=10.0,
             )
-            if res.status_code == 200:
-                me_data = res.json()
-                provider_subject = str(me_data.get("id", provider_subject))
-    except Exception:
-        logger.debug("Could not fetch Google user identity", exc_info=True)
+            res.raise_for_status()
+            me_data = res.json()
+            provider_subject = str(me_data.get("sub", ""))
+    except Exception as exc:
+        logger.warning("Google OAuth identity lookup failed", error=str(exc))
+        raise ValueError("GOOGLE_IDENTITY_UNAVAILABLE") from exc
+
+    if not provider_subject:
+        logger.warning("Google OAuth: UserInfo response did not contain a subject")
+        raise ValueError("GOOGLE_IDENTITY_UNAVAILABLE")
 
     cm = get_credential_manager()
     expires_at = None

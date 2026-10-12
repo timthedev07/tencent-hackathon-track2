@@ -69,7 +69,7 @@
   .trust-copy { margin: 4px 0 0; color: #74808d; font-size: 10px; line-height: 1.45; }
   .sidebar-help { display: flex; align-items: center; gap: 8px; padding: 18px 10px 0; color: #7b8794; font-size: 11px; }
 
-  .app-main { min-height: 100vh; margin-left: 232px; }
+  .app-main { min-width: 0; min-height: 100vh; margin-left: 232px; overflow-x: clip; }
   .topbar { position: sticky; top: 0; z-index: 10; display: flex; min-width: 0; align-items: center; justify-content: space-between; height: 64px; padding: 0 40px; border-bottom: 1px solid #e4e8ed; background: #fff; }
   .topbar-context, .topbar-actions { display: flex; min-width: 0; align-items: center; gap: 10px; color: #687583; font-size: 12px; }
   .topbar-context { overflow: hidden; white-space: nowrap; }
@@ -80,10 +80,10 @@
   .account-button { display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 6px; border: 0; color: #273341; background: none; cursor: pointer; }
   .account-avatar { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid #c9d6ff; border-radius: 8px; color: #315efb; background: #eef2ff; }
   .account-label { font-size: 12px; }
-  .account-menu { position: absolute; top: 38px; right: 0; min-width: 145px; padding: 5px !important; border-radius: 10px !important; }
-  .account-menu-item { display: flex; width: 100%; align-items: center; gap: 8px; padding: 9px; border: 0; border-radius: 7px; color: #364453; background: transparent; font-size: 12px; text-decoration: none; cursor: pointer; }
+  .account-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: max-content; min-width: 145px; padding: 5px !important; border-radius: 10px !important; }
+  .account-menu-item { display: flex; width: 100%; align-items: center; gap: 8px; padding: 9px; border: 0; border-radius: 7px; color: #364453; background: transparent; font-size: 12px; text-decoration: none; white-space: nowrap; cursor: pointer; }
   .account-menu-item:hover { background: #f3f5f7; }
-  .app-content { width: min(1160px, 100%); margin: 0 auto; padding: 48px 40px 72px; }
+  .app-content { box-sizing: border-box; width: 100%; max-width: 1160px; margin: 0 auto; padding: 48px 40px 72px; }
 
   .panel { position: relative; display: block; width: 100%; min-width: 0; overflow: hidden; color: #17212b; border: 1px solid #e1e6eb; border-radius: 12px; background: #fff; box-shadow: 0 1px 2px rgb(20 32 45 / 3%); }
   .panel-interactive { transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }

@@ -104,11 +104,17 @@ async def create_identity_link(
     existing_user = (await session.execute(existing_user_stmt)).scalar_one_or_none()
     if existing_user is not None:
         if (
-            existing_user.provider_account_type == "atlassian"
-            and existing_user.provider_subject_id == "atlassian-user"
+            (
+                existing_user.provider_account_type == "atlassian"
+                and existing_user.provider_subject_id == "atlassian-user"
+            )
+            or (
+                existing_user.provider_account_type == "google"
+                and existing_user.provider_subject_id == "google-user"
+            )
         ):
-            # Repair links created by the old Atlassian fallback once the real
-            # account ID is available. The placeholder was never an identity.
+            # Repair links created by the old provider fallbacks once the real
+            # account ID is available. These placeholders were never identities.
             existing_user.provider_subject_id = provider_subject_id
             existing_user.provider_account_type = provider_account_type
             existing_user.verified_at = now
