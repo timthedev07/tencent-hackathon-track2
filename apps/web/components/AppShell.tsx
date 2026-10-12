@@ -25,19 +25,25 @@ const navigation = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
-  const [signedIn, setSignedIn] = useState(false)
+  const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'guest'>('checking')
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
+  const publicPath = pathname === '/' || pathname === '/login'
 
   useEffect(() => {
-    const refresh = window.setTimeout(() => setSignedIn(Boolean(getAuthToken())), 0)
+    const refresh = window.setTimeout(() => {
+      const signedIn = Boolean(getAuthToken())
+      setAuthStatus(signedIn ? 'authenticated' : 'guest')
+      if (!signedIn && !publicPath) router.replace('/login')
+    }, 0)
     return () => window.clearTimeout(refresh)
-  }, [pathname])
+  }, [pathname, publicPath, router])
 
   if (pathname === '/login') return <>{children}</>
+  if (!publicPath && (authStatus === 'checking' || authStatus === 'guest')) return null
 
   function handleSignOut() {
     clearAuthToken()
-    setSignedIn(false)
+    setAuthStatus('guest')
     router.push('/login')
   }
 
@@ -110,11 +116,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <span className="account-avatar">
                   <UserRound size={15} />
                 </span>
-                <span className="account-label">{signedIn ? 'Alice' : 'Guest'}</span>
+                <span className="account-label">
+                  {authStatus === 'authenticated' ? 'Alice' : 'Guest'}
+                </span>
               </button>
               {accountMenuOpen && (
                 <GlassPanel outerClassName="account-menu" intensity="strong">
-                  {signedIn ? (
+                  {authStatus === 'authenticated' ? (
                     <button className="account-menu-item" onClick={handleSignOut}>
                       <LogOut size={15} /> Sign out
                     </button>
