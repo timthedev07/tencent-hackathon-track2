@@ -312,15 +312,11 @@ The remaining npm audit findings are confined to the ESLint development dependen
 
 **Remaining work:** add Playwright coverage for the Chronicle role, time, grant, revoke, update, citation and audit journeys, including a clean fixture reset.
 
-### 3. Local runtime configuration has a port mismatch
-
-Compose exposes PostgreSQL on host port `5434`, while `.env.example` defaults to `localhost:5432`. Container-to-container networking works through Compose overrides, but the README's hybrid workflow—Docker infrastructure plus host API—will point at the wrong port.
-
-### 4. Quality gates are not green
+### 3. Quality gates are not green
 
 The repository declares Ruff and strict Pyright as standards, but both currently fail. This weakens the usefulness of `make ci` and makes it hard to tell new failures from accepted debt.
 
-### 5. Integration coverage is still incomplete
+### 4. Integration coverage is still incomplete
 
 The provider-shaped and query-worker integration tests are valuable, but there are still no automated tests covering:
 
@@ -332,7 +328,7 @@ The provider-shaped and query-worker integration tests are valuable, but there a
 - Model API schema handling.
 - Full browser query/citation/audit flows.
 
-### 6. Some advertised capabilities remain placeholders
+### 5. Some advertised capabilities remain placeholders
 
 - The original Celery retrieval-backtest task remains a placeholder; the new Chronicle API runner currently evaluates role/time visibility, leakage and no-hindsight but not full answer or citation drift.
 - Fixture seeding and the durable query path run in CI on a fresh database; the broader upgraded-database temporal smoke validator remains operator-run.
@@ -340,7 +336,7 @@ The provider-shaped and query-worker integration tests are valuable, but there a
 - Alternative model providers are not implemented.
 - Model-based reranking is not implemented.
 
-### 7. Observability needs deployment configuration
+### 6. Observability needs deployment configuration
 
 Metrics and structured logging are present. Tracing is instrumented, but the OTLP exporter points to `${APP_BASE_URL}/v1/traces`, while this application exposes no trace collector endpoint there.
 
@@ -350,9 +346,8 @@ Metrics and structured logging are present. Tracing is instrumented, but the OTL
 
 ### Priority 0 — Make the project reproducible
 
-1. Align `.env.example` with the Compose PostgreSQL host port.
-2. Make `make ci` pass: fix Ruff, Pyright configuration, and actual type errors.
-3. Add a single `make demo-up` or equivalent that builds, migrates, seeds, and verifies readiness.
+1. Make `make ci` pass: fix Ruff, Pyright configuration, and actual type errors.
+2. Add a single `make demo-up` or equivalent that builds, migrates, seeds, and verifies readiness.
 
 ### Priority 1 — Extend backend integration proof
 
@@ -413,7 +408,7 @@ The project is demo-ready when all of the following are true:
 
 This is a well-conceived, security-first hackathon system with a surprisingly broad implementation. Its architecture is more mature than its operational polish. The fastest route to a convincing result is not adding more features; it is making the existing path deterministic:
 
-1. fix runtime configuration and make the repository-wide backend checks green,
+1. make the repository-wide backend checks green,
 2. automate the broader temporal smoke and reset path,
 3. complete the Chronicle browser journey and Playwright assertions,
 4. prove cross-tenant RLS and provider-boundary security cases, and

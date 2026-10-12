@@ -19,7 +19,7 @@ No external credentials needed. Set `APP_ENV=production` for hosted deployments.
 ## 2. PostgreSQL + pgvector
 
 ```env
-DATABASE_URL=postgresql+asyncpg://assistant:assistant@localhost:5432/assistant
+DATABASE_URL=postgresql+asyncpg://assistant:assistant@localhost:5434/assistant
 ```
 
 ### Local setup (Docker Compose)
@@ -27,7 +27,7 @@ DATABASE_URL=postgresql+asyncpg://assistant:assistant@localhost:5432/assistant
 The `docker-compose.yml` in the repo root starts a PostgreSQL + pgvector container. The default credentials are:
 
 - **Host:** `localhost`
-- **Port:** `5432`
+- **Port:** `5434` (published by Docker Compose; PostgreSQL remains on port `5432` inside the container network)
 - **Database:** `assistant`
 - **User:** `assistant`
 - **Password:** `assistant`
