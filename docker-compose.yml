@@ -19,7 +19,8 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # Port 6379 may be occupied by another local Compose project.
+      - "6382:6379"
     volumes:
       - redis_data:/data
     healthcheck:
