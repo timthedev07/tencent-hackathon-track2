@@ -20,6 +20,7 @@ import {
   getAuthToken,
   getConnections,
   startOAuth,
+  syncConnection,
   type ConnectionStatus,
 } from '@/lib/api/client'
 
@@ -58,12 +59,15 @@ function SettingsContent() {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [connections, setConnections] = useState<Record<string, ConnectionStatus>>({})
+  const [dataMode, setDataMode] = useState<'fixture' | 'live'>('fixture')
   const [loading, setLoading] = useState(true)
   const [connecting, setConnecting] = useState<string | null>(null)
+  const [syncing, setSyncing] = useState<string | null>(null)
 
   const refreshConnections = useCallback(async () => {
     try {
       const data = await getConnections()
+      setDataMode(data.dataMode)
       setConnections(
         Object.fromEntries(data.connections.map((connection) => [connection.source, connection])),
       )
@@ -111,6 +115,20 @@ function SettingsContent() {
     }
   }
 
+  async function handleSync(connectionId: string, label: string) {
+    setError(null)
+    setSuccess(null)
+    setSyncing(connectionId)
+    try {
+      await syncConnection(connectionId)
+      setSuccess(`${label} sync queued.`)
+    } catch (e) {
+      setError(e instanceof ApiClientError ? e.message : `Failed to sync ${label}.`)
+    } finally {
+      setSyncing(null)
+    }
+  }
+
   const hasToken = Boolean(getAuthToken())
   const connectedCount = Object.values(connections).filter(
     (connection) => connection.connected,
@@ -132,9 +150,23 @@ function SettingsContent() {
           </p>
         </div>
         <div className="flex items-center gap-2 rounded-full border border-teal-200/10 bg-teal-300/[.06] px-3 py-2 text-xs text-teal-100">
-          <span className="status-pulse" /> {connectedCount} of {PROVIDERS.length} connected
+          <span className="status-pulse" /> {connectedCount} of {PROVIDERS.length}{' '}
+          {dataMode === 'fixture' ? 'demo sources available' : 'connected'}
         </div>
       </div>
+
+      {dataMode === 'fixture' && (
+        <GlassPanel className="mb-5 flex items-start gap-3 p-4" intensity="soft">
+          <FileText size={17} className="mt-0.5 flex-none text-violet-200" />
+          <div>
+            <p className="text-xs font-semibold text-violet-100">Demo data mode</p>
+            <p className="mt-1 text-xs leading-5 text-white/50">
+              Relay is searching synthetic fixture data, not files from your provider accounts. Set{' '}
+              <code>SOURCE_DATA_MODE=live</code> and restart the API to connect real sources.
+            </p>
+          </div>
+        </GlassPanel>
+      )}
 
       {!hasToken && (
         <GlassPanel className="mb-5 flex items-start gap-3 p-4" intensity="soft">
@@ -174,12 +206,21 @@ function SettingsContent() {
                 >
                   <Icon size={20} />
                 </div>
-                <span
-                  className={`inline-flex items-center gap-1.5 text-xs font-medium ${connected ? 'text-teal-200' : 'text-white/35'}`}
-                >
-                  <span className={`source-dot ${provider.dot}`} />{' '}
-                  {connected ? 'Connected' : 'Not connected'}
-                </span>
+                <div className="flex flex-col items-end gap-2">
+                  <span className="rounded-full border border-white/10 bg-white/[.04] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/50">
+                    {dataMode === 'fixture' ? 'Demo data' : 'Live OAuth'}
+                  </span>
+                  <span
+                    className={`inline-flex items-center gap-1.5 text-xs font-medium ${connected ? 'text-teal-200' : 'text-white/35'}`}
+                  >
+                    <span className={`source-dot ${provider.dot}`} />{' '}
+                    {connected
+                      ? dataMode === 'fixture'
+                        ? 'Demo available'
+                        : 'Connected'
+                      : 'Not connected'}
+                  </span>
+                </div>
               </div>
               <h2 className="mt-7 text-base font-semibold text-white">{provider.label}</h2>
               <p className="mt-2 text-xs leading-5 text-white/45">{provider.description}</p>
@@ -188,22 +229,48 @@ function SettingsContent() {
                   {connection.display_name ?? 'Identity linked'}
                 </p>
               )}
-              <button
-                className="mt-auto inline-flex h-10 items-center justify-center gap-2 rounded-lg text-xs font-medium ghost-glass disabled:opacity-40"
-                onClick={() => handleConnect(provider.key, provider.label)}
-                disabled={!hasToken || connecting === provider.label}
-              >
-                {connecting === provider.label ? (
-                  <>
-                    <Loader2 size={14} className="animate-spin" /> Connecting…
-                  </>
-                ) : (
-                  <>
-                    <ExternalLink size={14} />{' '}
-                    {connected ? `Reconnect ${provider.label}` : `Connect ${provider.label}`}
-                  </>
+              <div className="mt-auto grid gap-2">
+                {connection?.canSync && connection.connectionId && (
+                  <button
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-lg text-xs font-semibold primary-glow disabled:opacity-40"
+                    onClick={() => handleSync(connection.connectionId!, provider.label)}
+                    disabled={syncing === connection.connectionId}
+                  >
+                    {syncing === connection.connectionId ? (
+                      <>
+                        <Loader2 size={14} className="animate-spin" /> Queuing…
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw size={14} /> Sync now
+                      </>
+                    )}
+                  </button>
                 )}
-              </button>
+                <button
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-lg text-xs font-medium ghost-glass disabled:opacity-40"
+                  onClick={() => handleConnect(provider.key, provider.label)}
+                  disabled={dataMode === 'fixture' || !hasToken || connecting === provider.label}
+                  title={
+                    dataMode === 'fixture'
+                      ? 'Switch SOURCE_DATA_MODE to live before connecting a provider.'
+                      : undefined
+                  }
+                >
+                  {connecting === provider.label ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" /> Connecting…
+                    </>
+                  ) : (
+                    <>
+                      <ExternalLink size={14} />{' '}
+                      {connected && dataMode === 'live'
+                        ? `Reconnect ${provider.label}`
+                        : `Connect ${provider.label}`}
+                    </>
+                  )}
+                </button>
+              </div>
             </GlassPanel>
           )
         })}

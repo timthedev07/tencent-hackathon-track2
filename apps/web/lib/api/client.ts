@@ -122,13 +122,28 @@ export interface ConnectionStatus {
   source: string
   connected: boolean
   display_name: string | null
+  connectionId: string | null
+  mode: 'fixture' | 'delegated_oauth' | null
+  canSync: boolean
 }
 export interface ConnectionsResponse {
+  dataMode: 'fixture' | 'live'
   connections: ConnectionStatus[]
+}
+
+export interface SyncConnectionResponse {
+  connectionId: string
+  status: 'queued'
 }
 
 export async function getConnections(): Promise<ConnectionsResponse> {
   return apiFetch<ConnectionsResponse>('/oauth/connections')
+}
+
+export async function syncConnection(connectionId: string): Promise<SyncConnectionResponse> {
+  return apiFetch<SyncConnectionResponse>(`/oauth/connections/${connectionId}/sync`, {
+    method: 'POST',
+  })
 }
 
 export async function devLogin(subject: string): Promise<{ token: string; subject: string }> {
