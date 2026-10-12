@@ -184,6 +184,7 @@
     top: 0;
     z-index: 10;
     display: flex;
+    min-width: 0;
     align-items: center;
     justify-content: space-between;
     height: 64px;
@@ -194,10 +195,19 @@
   .topbar-context,
   .topbar-actions {
     display: flex;
+    min-width: 0;
     align-items: center;
     gap: 10px;
     color: #687583;
     font-size: 12px;
+  }
+  .topbar-context {
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .topbar-actions {
+    flex-shrink: 0;
+    white-space: nowrap;
   }
   .status-pulse {
     width: 7px;
@@ -394,6 +404,16 @@
     color: #596675;
     font-family: 'SFMono-Regular', Consolas, monospace;
     font-size: 11px;
+  }
+}
+
+@media (max-width: 960px) {
+  .topbar {
+    padding: 0 24px;
+  }
+  .topbar-context,
+  .workspace-name {
+    display: none;
   }
 }
 

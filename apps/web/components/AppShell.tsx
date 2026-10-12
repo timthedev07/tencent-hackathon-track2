@@ -26,13 +26,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'guest'>('checking')
+  const [accountLabel, setAccountLabel] = useState('Guest')
   const [accountMenuOpen, setAccountMenuOpen] = useState(false)
   const publicPath = pathname === '/' || pathname === '/login'
 
   useEffect(() => {
     const refresh = window.setTimeout(() => {
-      const signedIn = Boolean(getAuthToken())
+      const token = getAuthToken()
+      const signedIn = Boolean(token)
+      const devSubject = token?.startsWith('dev-') ? token.slice(4) : null
       setAuthStatus(signedIn ? 'authenticated' : 'guest')
+      setAccountLabel(
+        devSubject
+          ? devSubject.charAt(0).toUpperCase() + devSubject.slice(1)
+          : token
+            ? 'Signed in'
+            : 'Guest',
+      )
       if (!signedIn && !publicPath) router.replace('/login')
     }, 0)
     return () => window.clearTimeout(refresh)
@@ -44,6 +54,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   function handleSignOut() {
     clearAuthToken()
     setAuthStatus('guest')
+    setAccountLabel('Guest')
     router.push('/login')
   }
 
@@ -117,7 +128,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <UserRound size={15} />
                 </span>
                 <span className="account-label">
-                  {authStatus === 'authenticated' ? 'Alice' : 'Guest'}
+                  {authStatus === 'authenticated' ? accountLabel : 'Guest'}
                 </span>
               </button>
               {accountMenuOpen && (

@@ -45,7 +45,7 @@ async def start_atlassian_oauth(user: AuthenticatedUser, oauth_state: str = "") 
             "client_id": settings.ATLASSIAN_CLIENT_ID,
             "scope": (
                 "read:confluence-content.read read:confluence-content.all "
-                "read:confluence-space.summary read:jira-work"
+                "read:confluence-space.summary read:jira-work read:me offline_access"
             ),
             "redirect_uri": settings.ATLASSIAN_REDIRECT_URI,
             "state": state_val,
@@ -92,7 +92,7 @@ async def complete_atlassian_oauth(code: str, state: str, user: AuthenticatedUse
         return
 
     # Determine provider subject and cloud id from Atlassian APIs.
-    provider_subject = "atlassian-user"
+    provider_subject: str | None = None
     workspace_id = "atlassian-workspace"
     workspace_name = "Atlassian"
     try:
@@ -104,7 +104,9 @@ async def complete_atlassian_oauth(code: str, state: str, user: AuthenticatedUse
             )
             if me_res.status_code == HTTPStatus.OK:
                 me_data = me_res.json()
-                provider_subject = str(me_data.get("account_id", provider_subject))
+                account_id = me_data.get("account_id")
+                if account_id:
+                    provider_subject = str(account_id)
             resources_res = await client.get(
                 "https://api.atlassian.com/oauth/token/accessible-resources",
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -116,6 +118,9 @@ async def complete_atlassian_oauth(code: str, state: str, user: AuthenticatedUse
                 workspace_name = str(resource.get("name", workspace_name))
     except Exception:
         logger.debug("Could not fetch Atlassian account/resource metadata", exc_info=True)
+
+    if not provider_subject:
+        raise ValueError("ATLASSIAN_IDENTITY_UNAVAILABLE")
 
     cm = get_credential_manager()
     expires_at = None

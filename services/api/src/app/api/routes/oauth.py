@@ -170,6 +170,24 @@ async def atlassian_callback(
     user = await _resolve_user_from_state(state)
     try:
         await complete_atlassian_oauth(code, state, user)
+    except ValueError as exc:
+        error_messages = {
+            "ATLASSIAN_IDENTITY_UNAVAILABLE": (
+                "Atlassian identity could not be verified. Enable the User Identity API "
+                "and read:me, then reconnect."
+            ),
+            "IDENTITY_LINK_ALREADY_CLAIMED": (
+                "This Atlassian account is already linked to another Relay user."
+            ),
+            "IDENTITY_LINK_SUBJECT_MISMATCH": (
+                "This Relay user already has a different Atlassian identity linked."
+            ),
+        }
+        error_code = str(exc)
+        logger.warning("Atlassian OAuth callback failed", error=error_code)
+        return _redirect_to_settings(
+            "error", "atlassian", error_messages.get(error_code, "OAuth connection failed")
+        )
     except Exception as exc:
         logger.warning("Atlassian OAuth callback failed", error=str(exc))
         return _redirect_to_settings("error", "atlassian", "OAuth connection failed")
