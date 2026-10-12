@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.source_mode import active_connection_mode
 from app.domain.types import Source
 from app.observability.logging import get_logger
 from app.persistence.models import IdentityLink, SourceConnection, User
@@ -41,6 +42,7 @@ async def find_identity_link(
         .where(
             IdentityLink.user_id == user_id,
             SourceConnection.source == source.value,
+            SourceConnection.mode == active_connection_mode(),
             IdentityLink.status == "verified",
             temporal_filter,
         )

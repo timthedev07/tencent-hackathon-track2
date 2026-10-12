@@ -33,6 +33,7 @@ from app.domain.query_execution import (
     fail_query_execution,
     record_query_stage,
 )
+from app.domain.source_mode import active_connection_mode
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
@@ -55,6 +56,7 @@ from app.persistence.models import (
     EvidenceItem,
     ObjectVersion,
     QueryRun,
+    SourceConnection,
     SourceObject,
 )
 from app.persistence.session import get_session_factory, set_tenant_context
@@ -106,9 +108,11 @@ async def _has_searchable_content(session: AsyncSession, tenant_id: UUID) -> boo
         select(Chunk.id)
         .join(ObjectVersion, Chunk.object_version_id == ObjectVersion.id)
         .join(SourceObject, ObjectVersion.source_object_id == SourceObject.id)
+        .join(SourceConnection, SourceObject.source_connection_id == SourceConnection.id)
         .where(
             Chunk.tenant_id == tenant_id,
             SourceObject.tenant_id == tenant_id,
+            SourceConnection.mode == active_connection_mode(),
             SourceObject.is_queryable.is_(True),
             SourceObject.is_deleted.is_(False),
             SourceObject.current_version_id == ObjectVersion.id,

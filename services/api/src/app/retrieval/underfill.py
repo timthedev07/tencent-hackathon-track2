@@ -14,10 +14,11 @@ from uuid import UUID
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.source_mode import active_connection_mode
 from app.domain.types import Source
 from app.observability.logging import get_logger
 from app.observability.metrics import RETRIEVAL_UNDERFILL
-from app.persistence.models import Chunk, ObjectVersion, SourceObject
+from app.persistence.models import Chunk, ObjectVersion, SourceConnection, SourceObject
 from app.retrieval.lexical import LexicalHit, lexical_search
 from app.retrieval.temporal import active_at
 from app.retrieval.vector import VectorHit, vector_search
@@ -87,9 +88,11 @@ async def vector_search_with_fallback(
         )
         .join(ObjectVersion, Chunk.object_version_id == ObjectVersion.id)
         .join(SourceObject, ObjectVersion.source_object_id == SourceObject.id)
+        .join(SourceConnection, SourceObject.source_connection_id == SourceConnection.id)
         .where(
             Chunk.tenant_id == tenant_id,
             SourceObject.tenant_id == tenant_id,
+            SourceConnection.mode == active_connection_mode(),
             ObjectVersion.ingestion_status == "active",
             Chunk.embedding.isnot(None),
             *temporal_filters,

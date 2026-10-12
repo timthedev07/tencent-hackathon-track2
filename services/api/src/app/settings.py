@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -24,6 +25,7 @@ class Settings(BaseSettings):
     WEB_BASE_URL: str = "http://localhost:3000"
     CORS_ALLOWED_ORIGINS: str = "http://localhost:3000"
     SQL_ECHO: bool = False
+    SOURCE_DATA_MODE: Literal["fixture", "live"] = "fixture"
 
     # ── Datastores ─────────────────────────────────────────────────
     DATABASE_URL: str = "postgresql+asyncpg://assistant:assistant@localhost:5432/assistant"
