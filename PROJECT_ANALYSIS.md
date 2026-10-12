@@ -14,7 +14,7 @@ The most important design choice is sound:
 
 The repository now contains much more than scaffolding. It has a FastAPI API, provider OAuth flows and connectors, a multi-stage Celery ingestion pipeline, hybrid PostgreSQL/pgvector retrieval, live permission checks, answer verification, audit-chain logic, and a polished Next.js interface.
 
-The main weakness is now full-product integration readiness rather than backend execution semantics. Deterministic fixture seeding and the Chronicle backend foundation pass fresh- and upgraded-database PostgreSQL smoke runs, including current and historical queries, role-based visibility, control events, capsules, backtests, chain verification and checkpoint export. Query creation publishes a dedicated Celery task, a database lease prevents concurrent execution, and real pipeline stages are persisted and replayed through reconnect-safe SSE. A focused GitHub Actions job now migrates a fresh pgvector database, seeds Chronicle, starts Redis/Celery, and tests lease contention, expiry recovery, redelivery and audit-failure safety. A separate hosted frontend job enforces the locked npm install, formatting, lint, unit tests, type checking and production build. Repository-wide backend quality gates and the Chronicle-specific browser journey remain incomplete.
+The main weakness is now full-product integration readiness rather than backend execution semantics. Deterministic fixture seeding and the Chronicle backend foundation pass fresh- and upgraded-database PostgreSQL smoke runs, including current and historical queries, role-based visibility, control events, capsules, backtests, chain verification and checkpoint export. Query creation publishes a dedicated Celery task, a database lease prevents concurrent execution, and real pipeline stages are persisted and replayed through reconnect-safe SSE. A focused GitHub Actions job now migrates a fresh pgvector database, seeds Chronicle, starts Redis/Celery, and tests lease contention, expiry recovery, redelivery and audit-failure safety. Separate hosted quality jobs enforce the backend's Ruff formatting/lint, Pyright check and default pytest suite, plus the frontend's locked npm install, formatting, lint, unit tests, type checking and production build. The Chronicle-specific browser journey remains incomplete.
 
 ## Current assessment
 
@@ -28,9 +28,9 @@ The main weakness is now full-product integration readiness rather than backend 
 | Query pipeline | Strong prototype | Hybrid retrieval through audited answer generation runs in Celery with a database lease and replayable persisted progress events. |
 | Security controls | Good prototype foundation | Fail-closed checks, live reauthorisation, RLS, encrypted content, and audit-before-response are represented. |
 | Frontend | Feature-complete prototype UI | Login, source settings, query progress, citations, evidence, and audit views exist. Hosted CI verifies the locked npm install, formatting, lint, unit tests, types and production build on Node 22. |
-| Automated tests | Useful and improving | 43 default backend tests pass; four opt-in PostgreSQL/Redis integration tests cover the query worker's critical failure semantics, and hosted frontend quality checks pass. |
+| Automated tests | Useful and improving | 46 default backend tests pass; four opt-in PostgreSQL/Redis integration tests cover the query worker's critical failure semantics, and hosted backend/frontend quality checks pass. |
 | Demo readiness | Medium-high for backend, medium overall | The deterministic backend, worker query path and smoke validator work against PostgreSQL, but the Chronicle UI and a repeatable clean-checkout browser run are still missing. |
-| Production readiness | Low | Identity UX, database roles, integration tests, operations, backend quality gates and deployment hardening need work. |
+| Production readiness | Low | Identity UX, database roles, broader integration tests, operations and deployment hardening need work. |
 
 ## What the product does
 
@@ -269,12 +269,10 @@ The following checks were run against this snapshot:
 
 | Check | Result |
 |---|---|
-| Backend tests | **Pass:** 43 default tests; four infrastructure tests are skipped unless explicitly enabled. |
+| Backend tests | **Pass:** 46 default tests; four infrastructure tests are skipped unless explicitly enabled. |
 | Query execution integration | **Pass locally:** 4 PostgreSQL/Redis/Celery cases, including forced audit failure and redelivery. |
-| Targeted changed-file Ruff | **Pass.** |
-| Targeted changed-file Pyright | **Pass:** 0 errors; existing warning debt remains. |
-| Ruff lint | **Fail:** 44 findings, mostly magic HTTP constants and long lines in the isolated pipeline test. |
-| Pyright strict | **Fail:** 48 errors and 582 warnings. The configuration also reports `$schema` as unrecognised. |
+| Ruff formatting and lint | **Pass:** the repository-wide checks are enforced in hosted CI. |
+| Pyright | **Pass:** 0 errors; existing warning-level annotation debt remains. |
 | Frontend TypeScript | **Pass:** `tsc --noEmit`. |
 | Frontend formatting | **Pass:** repository ignore rules exclude generated Next.js output and all source files match Prettier. |
 | Frontend ESLint | **Pass:** clean npm-installed dependency tree. |
@@ -282,7 +280,7 @@ The following checks were run against this snapshot:
 | Frontend production build | **Pass:** local build and clean Node 22 Docker build. |
 | Browser E2E | Not run; the Playwright test exists but does not yet cover the Chronicle demo journey. |
 
-The 43 passing backend tests cover:
+The 46 passing backend tests cover:
 
 - RRF and retrieval ordering.
 - Context sanitisation and token budgets.
@@ -312,11 +310,7 @@ The remaining npm audit findings are confined to the ESLint development dependen
 
 **Remaining work:** add Playwright coverage for the Chronicle role, time, grant, revoke, update, citation and audit journeys, including a clean fixture reset.
 
-### 3. Quality gates are not green
-
-The repository declares Ruff and strict Pyright as standards, but both currently fail. This weakens the usefulness of `make ci` and makes it hard to tell new failures from accepted debt.
-
-### 4. Integration coverage is still incomplete
+### 3. Integration coverage is still incomplete
 
 The provider-shaped and query-worker integration tests are valuable, but there are still no automated tests covering:
 
@@ -328,7 +322,7 @@ The provider-shaped and query-worker integration tests are valuable, but there a
 - Model API schema handling.
 - Full browser query/citation/audit flows.
 
-### 5. Some advertised capabilities remain placeholders
+### 4. Some advertised capabilities remain placeholders
 
 - The original Celery retrieval-backtest task remains a placeholder; the new Chronicle API runner currently evaluates role/time visibility, leakage and no-hindsight but not full answer or citation drift.
 - Fixture seeding and the durable query path run in CI on a fresh database; the broader upgraded-database temporal smoke validator remains operator-run.
@@ -336,7 +330,7 @@ The provider-shaped and query-worker integration tests are valuable, but there a
 - Alternative model providers are not implemented.
 - Model-based reranking is not implemented.
 
-### 6. Observability needs deployment configuration
+### 5. Observability needs deployment configuration
 
 Metrics and structured logging are present. Tracing is instrumented, but the OTLP exporter points to `${APP_BASE_URL}/v1/traces`, while this application exposes no trace collector endpoint there.
 
@@ -346,8 +340,7 @@ Metrics and structured logging are present. Tracing is instrumented, but the OTL
 
 ### Priority 0 — Make the project reproducible
 
-1. Make `make ci` pass: fix Ruff, Pyright configuration, and actual type errors.
-2. Add a single `make demo-up` or equivalent that builds, migrates, seeds, and verifies readiness.
+1. Add a single `make demo-up` or equivalent that builds, migrates, seeds, and verifies readiness.
 
 ### Priority 1 — Extend backend integration proof
 
@@ -408,11 +401,10 @@ The project is demo-ready when all of the following are true:
 
 This is a well-conceived, security-first hackathon system with a surprisingly broad implementation. Its architecture is more mature than its operational polish. The fastest route to a convincing result is not adding more features; it is making the existing path deterministic:
 
-1. make the repository-wide backend checks green,
-2. automate the broader temporal smoke and reset path,
-3. complete the Chronicle browser journey and Playwright assertions,
-4. prove cross-tenant RLS and provider-boundary security cases, and
-5. harden identity, observability and deployment operations.
+1. automate the broader temporal smoke and reset path,
+2. complete the Chronicle browser journey and Playwright assertions,
+3. prove cross-tenant RLS and provider-boundary security cases, and
+4. harden identity, observability and deployment operations.
 
 Once those pieces are complete, the repository should support a strong demonstration of its core differentiator: useful cross-source answers without weakening each source's access controls.
 
@@ -437,7 +429,7 @@ These figures are engineering estimates, not acceptance results. A stage is only
 | Stage 2 — Query pipeline | Implemented; core worker semantics automated | `POST /v1/queries` accepts timezone-aware `asOf` and publishes a Celery job. A database lease guards execution. Every real stage is persisted in `query_events`; SSE is read-only and resumes using `Last-Event-ID`. A fresh-database GitHub Actions job covers active contention, expiry takeover, real Redis/Celery execution, terminal redelivery and ordered replay. | Promote the full golden role/time scenarios into pytest and add hard-kill recovery plus browser coverage. |
 | Stage 3 — Atomic audit and replay | In progress | Query completion atomically persists evidence IDs, version IDs, content hashes, configuration versions, a sealed context hash, an Evidence Capsule and audit event. An integration test forces audit commit failure and proves no answer, evidence, capsule or audit event becomes observable; SSE ends with failure. | Add checkpoint tamper/rewrite tests and a repeatable external-store demonstration. |
 | Stage 4 — Knowledge audit and backtesting | Foundation implemented | `/v1/knowledge-audit/findings` deterministically reports conflict, staleness, access-risk and process-gap findings. `/v1/backtests/runs` persists role/time visibility, leakage and no-hindsight results with configuration versions. | Extend runs through the full answer/citation pipeline, store baselines, classify answer/citation drift and prove deliberate regressions. |
-| Stage 5 — Demo hardening | In progress | Fixture controls provide backend demo primitives, and hosted CI now enforces the npm-based frontend's locked install, formatting, lint, unit tests, types and production build on Node 22; the Docker production build also passes. | Build the six Chronicle UI surfaces, wire the `asOf` picker and controls, generate client types, and create a clean reset-to-demo E2E test. |
+| Stage 5 — Demo hardening | In progress | Fixture controls provide backend demo primitives. Hosted CI enforces backend formatting, lint, types and default tests, plus the npm-based frontend's locked install, formatting, lint, unit tests, types and production build on Node 22; the Docker production build also passes. | Build the six Chronicle UI surfaces, wire the `asOf` picker and controls, generate client types, and create a clean reset-to-demo E2E test. |
 | Optional Stage 6 — Real connector | Existing but unverified | Confluence, Jira, Slack and Drive connector modules already exist. | Defer until the fixture-first Core MVP is accepted; then validate one delegated OAuth connector end to end. |
 
 ### Backend capabilities added in this checkpoint

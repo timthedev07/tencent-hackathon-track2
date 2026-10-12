@@ -1,5 +1,6 @@
 line-length = 100
 target-version = "py312"
+extend-exclude = ["chronicle_prd_for_codex.md"]
 
 [lint]
 select = [
@@ -64,3 +65,4 @@ ignore = [
 
 [format]
 docstring-code-format = true
+exclude = ["chronicle_prd_for_codex.md"]

@@ -1,0 +1,28 @@
+name: Backend quality
+
+on:
+  pull_request:
+  push:
+    branches: [dev, jess]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen --all-extras
+      - name: Run backend quality gate
+        run: make ci
