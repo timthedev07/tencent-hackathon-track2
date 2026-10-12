@@ -26,10 +26,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const [signedIn, setSignedIn] = useState(false);
+  const [accountLabel, setAccountLabel] = useState('Guest');
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
 
   useEffect(() => {
-    const refresh = window.setTimeout(() => setSignedIn(Boolean(getAuthToken())), 0);
+    const refresh = window.setTimeout(() => {
+      const token = getAuthToken();
+      const devSubject = token?.startsWith('dev-') ? token.slice(4) : null;
+      setSignedIn(Boolean(token));
+      setAccountLabel(
+        devSubject
+          ? devSubject.charAt(0).toUpperCase() + devSubject.slice(1)
+          : token
+            ? 'Signed in'
+            : 'Guest',
+      );
+    }, 0);
     return () => window.clearTimeout(refresh);
   }, [pathname]);
 
@@ -38,6 +50,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   function handleSignOut() {
     clearAuthToken();
     setSignedIn(false);
+    setAccountLabel('Guest');
     router.push('/login');
   }
 
@@ -95,7 +108,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="account-wrap">
               <button className="account-button" onClick={() => setAccountMenuOpen((open) => !open)} aria-expanded={accountMenuOpen}>
                 <span className="account-avatar"><UserRound size={15} /></span>
-                <span className="account-label">{signedIn ? 'Alice' : 'Guest'}</span>
+                <span className="account-label">{signedIn ? accountLabel : 'Guest'}</span>
               </button>
               {accountMenuOpen && (
                 <GlassPanel outerClassName="account-menu" intensity="strong">

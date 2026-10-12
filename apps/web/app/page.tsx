@@ -11,7 +11,7 @@ const capabilities = [
 export default function Home() {
   return (
     <div className="mx-auto max-w-6xl">
-      <section className="grid items-center gap-12 py-8 lg:grid-cols-[1.1fr_.9fr] lg:py-16">
+      <section className="grid items-center gap-12 py-8 xl:grid-cols-[1.1fr_.9fr] xl:py-16">
         <div>
           <div className="section-kicker flex items-center gap-2"><Sparkles size={13} /> Your organisation&apos;s signal, in one place</div>
           <h1 className="page-title max-w-2xl">The calm layer over your company&apos;s knowledge.</h1>

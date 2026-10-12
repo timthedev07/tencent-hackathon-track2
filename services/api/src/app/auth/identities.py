@@ -45,7 +45,7 @@ async def find_identity_link(
     links = result.scalars().all()
 
     if len(links) == 0:
-        logger.info(
+        logger.debug(
             "Identity link missing — source will be denied",
             user_id=str(user_id),
             source=source.value,
@@ -74,14 +74,63 @@ async def create_identity_link(
     provider_account_type: str | None = None,
     verified_by: str = "oauth",
 ) -> IdentityLink:
-    """Create and verify a new identity link."""
+    """Create or refresh a verified identity link without reassigning it."""
+    now = datetime.now(UTC)
+    existing_stmt = select(IdentityLink).where(
+        IdentityLink.source_connection_id == source_connection_id,
+        IdentityLink.provider_subject_id == provider_subject_id,
+    )
+    existing = (await session.execute(existing_stmt)).scalar_one_or_none()
+    if existing is not None:
+        if existing.user_id != user_id:
+            raise ValueError("IDENTITY_LINK_ALREADY_CLAIMED")
+        existing.provider_account_type = provider_account_type
+        existing.verified_at = now
+        existing.verified_by = verified_by
+        existing.status = "verified"
+        await session.flush()
+        logger.info(
+            "Identity link refreshed",
+            user_id=str(user_id),
+            source_connection_id=str(source_connection_id),
+            provider_subject_id=provider_subject_id,
+        )
+        return existing
+
+    existing_user_stmt = select(IdentityLink).where(
+        IdentityLink.user_id == user_id,
+        IdentityLink.source_connection_id == source_connection_id,
+    )
+    existing_user = (await session.execute(existing_user_stmt)).scalar_one_or_none()
+    if existing_user is not None:
+        if (
+            existing_user.provider_account_type == "atlassian"
+            and existing_user.provider_subject_id == "atlassian-user"
+        ):
+            # Repair links created by the old Atlassian fallback once the real
+            # account ID is available. The placeholder was never an identity.
+            existing_user.provider_subject_id = provider_subject_id
+            existing_user.provider_account_type = provider_account_type
+            existing_user.verified_at = now
+            existing_user.verified_by = verified_by
+            existing_user.status = "verified"
+            await session.flush()
+            logger.info(
+                "Identity link repaired",
+                user_id=str(user_id),
+                source_connection_id=str(source_connection_id),
+                provider_subject_id=provider_subject_id,
+            )
+            return existing_user
+        raise ValueError("IDENTITY_LINK_SUBJECT_MISMATCH")
+
     link = IdentityLink(
         tenant_id=tenant_id,
         user_id=user_id,
         source_connection_id=source_connection_id,
         provider_subject_id=provider_subject_id,
         provider_account_type=provider_account_type,
-        verified_at=datetime.now(UTC),
+        verified_at=now,
         verified_by=verified_by,
         status="verified",
     )
