@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.errors import PermanentError
@@ -98,7 +99,7 @@ async def complete_google_oauth(code: str, state: str, user: AuthenticatedUser) 
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=10.0,
             )
-            if res.status_code == 200:
+            if res.status_code == HTTPStatus.OK:
                 me_data = res.json()
                 provider_subject = str(me_data.get("id", provider_subject))
     except Exception:
@@ -339,7 +340,7 @@ class GoogleDriveConnector:
         request_id = response.headers.get("x-guploader-uploadid") or response.headers.get(
             "x-request-id"
         )
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             data = response.json()
             if data.get("trashed") is True:
                 return AccessCheckResult(
@@ -352,27 +353,27 @@ class GoogleDriveConnector:
                 reason_code="provider_allow",
                 provider_request_id=request_id,
             )
-        if response.status_code in {401, 403}:
+        if response.status_code in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
             return AccessCheckResult(
                 outcome=(
                     AccessOutcome.EXPIRED_CREDENTIAL
-                    if response.status_code == 401
+                    if response.status_code == HTTPStatus.UNAUTHORIZED
                     else AccessOutcome.DENY
                 ),
                 reason_code=(
                     "credential_expired"
-                    if response.status_code == 401
+                    if response.status_code == HTTPStatus.UNAUTHORIZED
                     else "provider_deny"
                 ),
                 provider_request_id=request_id,
             )
-        if response.status_code == 404:
+        if response.status_code == HTTPStatus.NOT_FOUND:
             return AccessCheckResult(
                 outcome=AccessOutcome.DENY,
                 reason_code="object_not_found_or_forbidden",
                 provider_request_id=request_id,
             )
-        if response.status_code == 429:
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             return AccessCheckResult(
                 outcome=AccessOutcome.TIMEOUT,
                 reason_code="provider_rate_limited",
@@ -428,9 +429,7 @@ def _permissions(value: object) -> list[dict[str, object]]:
                 "display_name": permission.get("displayName") or permission.get("emailAddress"),
                 "permission": "read",
                 "grant_effect": "allow",
-                "inheritance_path": {
-                    "permission_details": permission.get("permissionDetails", [])
-                },
+                "inheritance_path": {"permission_details": permission.get("permissionDetails", [])},
             }
         )
     return grants

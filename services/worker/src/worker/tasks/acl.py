@@ -102,9 +102,7 @@ async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
                     principal_type=principal_type,
                     provider_principal_id=str(provider_id),
                     display_name=(
-                        str(grant["display_name"])
-                        if grant.get("display_name")
-                        else None
+                        str(grant["display_name"]) if grant.get("display_name") else None
                     ),
                 )
                 session.add(principal)

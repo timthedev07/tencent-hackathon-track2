@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from http import HTTPStatus
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.http import json_body, request
@@ -66,11 +67,7 @@ class JiraConnector:
         objects = [_scan_object(item) for item in issues if isinstance(item, dict)]
         return ScanPage(
             objects=objects,
-            next_cursor=(
-                str(payload["nextPageToken"])
-                if payload.get("nextPageToken")
-                else None
-            ),
+            next_cursor=(str(payload["nextPageToken"]) if payload.get("nextPageToken") else None),
         )
 
     async def read_changes(
@@ -98,22 +95,17 @@ class JiraConnector:
             },
         )
         payload = json_body(response)
-        fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
-        comments = fields.get("comment") if isinstance(fields.get("comment"), dict) else {}
+        fields = _mapping(payload.get("fields"))
+        comments = _mapping(fields.get("comment"))
         comment_text = []
-        for comment in comments.get("comments", []):
+        comment_items = comments.get("comments")
+        for comment in comment_items if isinstance(comment_items, list) else []:
             if isinstance(comment, dict):
                 comment_text.append(flatten_adf(comment.get("body")))
         description = flatten_adf(fields.get("description"))
-        content = strip_html(
-            "\n\n".join(part for part in [description, *comment_text] if part)
-        )
+        content = strip_html("\n\n".join(part for part in [description, *comment_text] if part))
         issue_links = payload.get("self")
-        web_link = (
-            payload.get("_links", {}).get("web")
-            if isinstance(payload.get("_links"), dict)
-            else None
-        )
+        web_link = _mapping(payload.get("_links")).get("web")
         updated = fields.get("updated")
         return FetchObjectResult(
             outcome=ConnectorOutcome.SUCCESS,
@@ -173,25 +165,25 @@ class JiraConnector:
             return AccessCheckResult(outcome=AccessOutcome.UNKNOWN, reason_code="provider_error")
 
         request_id = response.headers.get("x-arequestid") or response.headers.get("x-request-id")
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             return AccessCheckResult(
                 outcome=AccessOutcome.ALLOW,
                 reason_code="provider_allow",
                 provider_request_id=request_id,
             )
-        if response.status_code == 401:
+        if response.status_code == HTTPStatus.UNAUTHORIZED:
             return AccessCheckResult(
                 outcome=AccessOutcome.EXPIRED_CREDENTIAL,
                 reason_code="credential_expired",
                 provider_request_id=request_id,
             )
-        if response.status_code in {403, 404}:
+        if response.status_code in {HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND}:
             return AccessCheckResult(
                 outcome=AccessOutcome.DENY,
                 reason_code="object_not_found_or_forbidden",
                 provider_request_id=request_id,
             )
-        if response.status_code == 429:
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             return AccessCheckResult(
                 outcome=AccessOutcome.TIMEOUT,
                 reason_code="provider_rate_limited",
@@ -220,7 +212,7 @@ def _api_url(
 
 
 def _scan_object(item: dict[str, object]) -> dict[str, object]:
-    fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
+    fields = _mapping(item.get("fields"))
     return {
         "external_object_id": str(item.get("key") or item.get("id")),
         "object_type": "issue",
@@ -229,6 +221,10 @@ def _scan_object(item: dict[str, object]) -> dict[str, object]:
         "title": str(fields.get("summary")) if fields.get("summary") else None,
         "source_revision": str(fields.get("updated") or item.get("id")),
     }
+
+
+def _mapping(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
 
 
 def _parent_id(value: object) -> str | None:

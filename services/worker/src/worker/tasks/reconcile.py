@@ -41,14 +41,10 @@ async def _run_reconciliation(source_filter: str | None = None) -> dict[str, Any
                 str(value)
                 for value in (
                     await session.scalars(
-                    select(SourceConnection.id).where(
-                        SourceConnection.status == "connected",
-                        *(
-                            [SourceConnection.source == source_filter]
-                            if source_filter
-                            else []
-                        ),
-                    )
+                        select(SourceConnection.id).where(
+                            SourceConnection.status == "connected",
+                            *([SourceConnection.source == source_filter] if source_filter else []),
+                        )
                     )
                 ).all()
             ]

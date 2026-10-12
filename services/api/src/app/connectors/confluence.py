@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.http import json_body, request
@@ -101,7 +102,7 @@ async def complete_atlassian_oauth(code: str, state: str, user: AuthenticatedUse
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=10.0,
             )
-            if me_res.status_code == 200:
+            if me_res.status_code == HTTPStatus.OK:
                 me_data = me_res.json()
                 provider_subject = str(me_data.get("account_id", provider_subject))
             resources_res = await client.get(
@@ -109,7 +110,7 @@ async def complete_atlassian_oauth(code: str, state: str, user: AuthenticatedUse
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=10.0,
             )
-            if resources_res.status_code == 200 and resources_res.json():
+            if resources_res.status_code == HTTPStatus.OK and resources_res.json():
                 resource = resources_res.json()[0]
                 workspace_id = str(resource.get("id", workspace_id))
                 workspace_name = str(resource.get("name", workspace_name))
@@ -199,9 +200,7 @@ class ConfluenceConnector:
         cloud_id = _cloud_id(connection, credential)
         url = _page_url(cloud_id, cursor)
         params = (
-            None
-            if cursor and cursor.startswith("http")
-            else {"limit": 100, "status": "current"}
+            None if cursor and cursor.startswith("http") else {"limit": 100, "status": "current"}
         )
         response = await request(
             "GET",
@@ -211,9 +210,7 @@ class ConfluenceConnector:
         )
         payload = json_body(response)
         objects = [
-            _scan_object(item)
-            for item in payload.get("results", [])
-            if isinstance(item, dict)
+            _scan_object(item) for item in payload.get("results", []) if isinstance(item, dict)
         ]
         return ScanPage(objects=objects, next_cursor=next_cursor(payload))
 
@@ -241,11 +238,11 @@ class ConfluenceConnector:
             params={"body-format": "storage"},
         )
         payload = json_body(response)
-        version = payload.get("version") if isinstance(payload.get("version"), dict) else {}
-        body = payload.get("body") if isinstance(payload.get("body"), dict) else {}
-        storage = body.get("storage") if isinstance(body.get("storage"), dict) else {}
+        version = _mapping(payload.get("version"))
+        body = _mapping(payload.get("body"))
+        storage = _mapping(body.get("storage"))
         content = strip_html(str(storage.get("value") or ""))
-        links = payload.get("_links") if isinstance(payload.get("_links"), dict) else {}
+        links = _mapping(payload.get("_links"))
         canonical_url = links.get("webui")
         if canonical_url and links.get("base"):
             canonical_url = f"{links['base']}{canonical_url}"
@@ -259,7 +256,7 @@ class ConfluenceConnector:
             canonical_url=str(canonical_url) if canonical_url else None,
             title=str(payload.get("title")) if payload.get("title") else None,
             content=content,
-            last_modified_at=version.get("createdAt"),
+            last_modified_at=_parse_datetime(version.get("createdAt")),
             provider_metadata={
                 "space_id": payload.get("spaceId"),
                 "ancestor_ids": _ancestor_ids(payload.get("ancestors")),
@@ -337,25 +334,25 @@ class ConfluenceConnector:
             return AccessCheckResult(outcome=AccessOutcome.UNKNOWN, reason_code="provider_error")
 
         request_id = response.headers.get("x-arequestid") or response.headers.get("x-request-id")
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             return AccessCheckResult(
                 outcome=AccessOutcome.ALLOW,
                 reason_code="provider_allow",
                 provider_request_id=request_id,
             )
-        if response.status_code == 401:
+        if response.status_code == HTTPStatus.UNAUTHORIZED:
             return AccessCheckResult(
                 outcome=AccessOutcome.EXPIRED_CREDENTIAL,
                 reason_code="credential_expired",
                 provider_request_id=request_id,
             )
-        if response.status_code in {403, 404}:
+        if response.status_code in {HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND}:
             return AccessCheckResult(
                 outcome=AccessOutcome.DENY,
                 reason_code="object_not_found_or_forbidden",
                 provider_request_id=request_id,
             )
-        if response.status_code == 429:
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             return AccessCheckResult(
                 outcome=AccessOutcome.TIMEOUT,
                 reason_code="provider_rate_limited",
@@ -388,8 +385,8 @@ def _page_url(cloud_id: str, cursor: str | None) -> str:
 
 
 def _scan_object(item: dict[str, object]) -> dict[str, object]:
-    version = item.get("version") if isinstance(item.get("version"), dict) else {}
-    links = item.get("_links") if isinstance(item.get("_links"), dict) else {}
+    version = _mapping(item.get("version"))
+    links = _mapping(item.get("_links"))
     canonical_url = links.get("webui")
     if canonical_url and links.get("base"):
         canonical_url = f"{links['base']}{canonical_url}"
@@ -399,14 +396,25 @@ def _scan_object(item: dict[str, object]) -> dict[str, object]:
         "parent_external_id": str(item.get("parentId")) if item.get("parentId") else None,
         "canonical_url": str(canonical_url) if canonical_url else None,
         "title": str(item.get("title")) if item.get("title") else None,
-        "source_revision": str(
-            version.get("number") or version.get("createdAt") or item.get("id")
-        ),
+        "source_revision": str(version.get("number") or version.get("createdAt") or item.get("id")),
         "provider_metadata": {
             "space_id": item.get("spaceId"),
             "ancestor_ids": _ancestor_ids(item.get("ancestors")),
         },
     }
+
+
+def _mapping(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _ancestor_ids(value: object) -> list[str]:

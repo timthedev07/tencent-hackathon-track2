@@ -181,10 +181,7 @@ async def resolve_user(session: AsyncSession, claims: dict[str, Any]) -> Authent
     if tenant is not None:
         user_filters.append(User.tenant_id == tenant.id)
     stmt = (
-        select(User, Tenant)
-        .join(Tenant, User.tenant_id == Tenant.id)
-        .where(*user_filters)
-        .limit(1)
+        select(User, Tenant).join(Tenant, User.tenant_id == Tenant.id).where(*user_filters).limit(1)
     )
     result = await session.execute(stmt)
     row = result.first()

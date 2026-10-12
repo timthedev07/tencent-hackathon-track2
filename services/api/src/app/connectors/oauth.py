@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 from typing import Any
 
 import httpx
@@ -95,7 +96,7 @@ async def _post_token(
             response = await client.post(url, json=json, data=data)
     except httpx.HTTPError as exc:
         raise ValueError("SOURCE_CREDENTIAL_EXPIRED") from exc
-    if response.status_code >= 400:
+    if response.status_code >= HTTPStatus.BAD_REQUEST:
         raise TypeError("SOURCE_CREDENTIAL_EXPIRED")
     try:
         payload = response.json()

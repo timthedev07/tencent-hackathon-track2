@@ -9,9 +9,7 @@ from app.auth import credentials
 from cryptography.fernet import Fernet
 
 
-def _manager_with_key(
-    monkeypatch: pytest.MonkeyPatch, key: str
-) -> credentials.CredentialManager:
+def _manager_with_key(monkeypatch: pytest.MonkeyPatch, key: str) -> credentials.CredentialManager:
     settings = SimpleNamespace(ENCRYPTION_MASTER_KEY=key)
     monkeypatch.setattr(credentials, "get_settings", lambda: settings)
     return credentials.CredentialManager()

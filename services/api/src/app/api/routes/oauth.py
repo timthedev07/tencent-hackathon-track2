@@ -70,9 +70,7 @@ async def list_connections(
         link = await find_identity_link(session, user.user_id, source)
         display_name = None
         if link is not None:
-            stmt = select(SourceConnection).where(
-                SourceConnection.id == link.source_connection_id
-            )
+            stmt = select(SourceConnection).where(SourceConnection.id == link.source_connection_id)
             conn_result = await session.execute(stmt)
             conn = conn_result.scalar_one_or_none()
             if conn is not None:
@@ -216,9 +214,9 @@ async def _resolve_user_from_state(state: str) -> AuthenticatedUser:
         await set_tenant_context(session, tenant_id)
         row = (
             await session.execute(
-                select(User, Tenant).join(Tenant, User.tenant_id == Tenant.id).where(
-                    User.id == user_id, User.tenant_id == tenant_id
-                )
+                select(User, Tenant)
+                .join(Tenant, User.tenant_id == Tenant.id)
+                .where(User.id == user_id, User.tenant_id == tenant_id)
             )
         ).first()
         if row is None:
@@ -246,5 +244,6 @@ def _redirect_to_settings(
     params = f"?status={status_val}&source={source}"
     if error:
         import urllib.parse
+
         params += f"&error={urllib.parse.quote(error)}"
     return RedirectResponse(url=f"{base}/settings{params}")

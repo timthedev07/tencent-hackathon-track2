@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
+
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.errors import ConnectorError, ForbiddenError, PermanentError, RateLimitedError
 from app.connectors.http import json_body, request
@@ -199,7 +201,8 @@ class SlackConnector:
         )
         payload = _slack_body(response)
         objects: list[dict[str, object]] = []
-        for channel in payload.get("channels", []):
+        channels = payload.get("channels")
+        for channel in channels if isinstance(channels, list) else []:
             if not isinstance(channel, dict) or not channel.get("id"):
                 continue
             history = await _slack_request(
@@ -207,7 +210,8 @@ class SlackConnector:
                 credential,
                 {"channel": channel["id"], "limit": 100},
             )
-            for message in history.get("messages", []):
+            messages = history.get("messages")
+            for message in messages if isinstance(messages, list) else []:
                 if not isinstance(message, dict) or not message.get("ts"):
                     continue
                 ts = str(message["ts"])
@@ -316,13 +320,13 @@ class SlackConnector:
             return AccessCheckResult(outcome=AccessOutcome.UNKNOWN, reason_code="provider_error")
 
         request_id = response.headers.get("x-slack-req-id")
-        if response.status_code == 401:
+        if response.status_code == HTTPStatus.UNAUTHORIZED:
             return AccessCheckResult(
                 outcome=AccessOutcome.EXPIRED_CREDENTIAL,
                 reason_code="credential_expired",
                 provider_request_id=request_id,
             )
-        if response.status_code == 429:
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             return AccessCheckResult(
                 outcome=AccessOutcome.TIMEOUT,
                 reason_code="provider_rate_limited",
