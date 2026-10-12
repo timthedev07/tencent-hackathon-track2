@@ -35,6 +35,16 @@ def deterministic_embedding(text: str, dimension: int) -> list[float]:
 class ModelGateway(Protocol):
     """Abstract model gateway — hides provider specifics."""
 
+    @property
+    def generation_model_version(self) -> str:
+        """Return the exact generation implementation used for audit metadata."""
+        ...
+
+    @property
+    def embedding_model_version(self) -> str:
+        """Return the exact embedding implementation used for audit metadata."""
+        ...
+
     async def embed(
         self,
         texts: list[str],
@@ -62,6 +72,14 @@ class ModelGateway(Protocol):
 
 class StubModelGateway:
     """Dev/stub model gateway for local development without API keys."""
+
+    @property
+    def generation_model_version(self) -> str:
+        return "stub-extractive-v1"
+
+    @property
+    def embedding_model_version(self) -> str:
+        return "deterministic-local-v1"
 
     @property
     def embedding_dimension(self) -> int:
@@ -121,6 +139,14 @@ class HttpModelGateway:
 
     def __init__(self) -> None:
         self._settings = get_settings()
+
+    @property
+    def generation_model_version(self) -> str:
+        return self._settings.GENERATION_MODEL
+
+    @property
+    def embedding_model_version(self) -> str:
+        return self._settings.EMBEDDING_MODEL
 
     @property
     def embedding_dimension(self) -> int:

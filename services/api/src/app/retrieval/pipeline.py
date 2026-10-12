@@ -217,9 +217,10 @@ async def _audit_commit(
     partial_sources: list[str] | None = None,
     compiled_context: CompiledContext | None = None,
     error_code: str | None = None,
+    model_version: str | None = None,
+    embedding_version: str | None = None,
 ) -> None:
     cm = get_credential_manager()
-    settings = get_settings()
     encrypted_answer = cm.encrypt_bytes(answer.model_dump_json().encode("utf-8"))
 
     run = (
@@ -237,8 +238,8 @@ async def _audit_commit(
         run.answer_ciphertext = encrypted_answer.ciphertext
         run.completed_at = datetime.now(UTC)
         run.latency_ms = int((datetime.now(UTC) - run.started_at).total_seconds() * 1000)
-        run.model_version = settings.GENERATION_MODEL
-        run.embedding_version = settings.EMBEDDING_MODEL
+        run.model_version = model_version
+        run.embedding_version = embedding_version
         run.prompt_version = "answer_v1"
         run.policy_version = compiled_context.policy_version
         run.retriever_version = "rrf_v1"
@@ -365,6 +366,8 @@ async def _audit_terminal_result(
     partial_sources: list[str] | None = None,
     reranked: list[RerankedEvidence] | None = None,
     error_code: str | None = None,
+    model_version: str | None = None,
+    embedding_version: str | None = None,
 ) -> None:
     factory = get_session_factory()
     async with factory() as session:
@@ -381,6 +384,8 @@ async def _audit_terminal_result(
             partial_sources=partial_sources,
             compiled_context=None,
             error_code=error_code,
+            model_version=model_version,
+            embedding_version=embedding_version,
         )
         await session.commit()
 
@@ -439,7 +444,7 @@ async def run_query_pipeline(  # noqa: PLR0911
             }
 
         gateway = get_model_gateway()
-        query_embedding = await gateway.embed([query_text], settings.EMBEDDING_MODEL)
+        query_embedding = await gateway.embed([query_text], gateway.embedding_model_version)
         embedding = query_embedding[0] if query_embedding else []
 
         async with factory() as session:
@@ -467,6 +472,7 @@ async def run_query_pipeline(  # noqa: PLR0911
                 tenant_id=user.tenant_id,
                 answer=_terminal_answer(),
                 status=QueryStatus.DENIED.value,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
 
@@ -515,6 +521,7 @@ async def run_query_pipeline(  # noqa: PLR0911
                 status=QueryStatus.DENIED.value,
                 access_decisions=local_denied_results,
                 object_source_map=local_object_source_map,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
 
@@ -561,6 +568,7 @@ async def run_query_pipeline(  # noqa: PLR0911
                 status=QueryStatus.DENIED.value,
                 access_decisions=all_access_results,
                 object_source_map=all_object_source_map,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
 
@@ -582,6 +590,7 @@ async def run_query_pipeline(  # noqa: PLR0911
                 status=QueryStatus.DENIED.value,
                 access_decisions=all_access_results,
                 object_source_map=all_object_source_map,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
 
@@ -672,6 +681,8 @@ async def run_query_pipeline(  # noqa: PLR0911
                 status=final_status,
                 partial_sources=list(partial_sources) if partial_sources else None,
                 compiled_context=compiled_context,
+                model_version=gateway.generation_model_version,
+                embedding_version=gateway.embedding_model_version,
             )
             await session.commit()
 
