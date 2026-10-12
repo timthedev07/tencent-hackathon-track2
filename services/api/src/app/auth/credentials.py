@@ -17,6 +17,8 @@ Runtime:
 from __future__ import annotations
 
 import base64
+import binascii
+import hashlib
 import os
 import secrets
 
@@ -31,6 +33,15 @@ logger = get_logger(__name__)
 # Key version tracking for rotation
 CURRENT_KEY_VERSION = "v1"
 _EXPECTED_PAYLOAD_PARTS = 3  # wrapped_dek || nonce || ciphertext
+_FERNET_KEY_BYTES = 32
+
+
+def _encoded_fernet_key(key: str) -> bytes | None:
+    try:
+        decoded = base64.urlsafe_b64decode(key)
+    except (ValueError, binascii.Error):
+        return None
+    return key.encode("utf-8") if len(decoded) == _FERNET_KEY_BYTES else None
 
 
 class EncryptedPayload(BaseModel):
@@ -58,14 +69,8 @@ class CredentialManager:
             # If the key is a valid URL-safe base64 string (44 chars), use it
             # directly. Otherwise, derive a 32-byte key from the raw bytes
             # using SHA-256, then encode as URL-safe base64.
-            try:
-                key_bytes = base64.urlsafe_b64decode(key)
-                if len(key_bytes) != 32:
-                    raise ValueError
-                fernet_key = key.encode("utf-8")
-            except (ValueError, base64.binascii.Error):
-                import hashlib
-
+            fernet_key = _encoded_fernet_key(key)
+            if fernet_key is None:
                 derived = hashlib.sha256(key.encode("utf-8")).digest()
                 fernet_key = base64.urlsafe_b64encode(derived)
             self._fernet = Fernet(fernet_key)

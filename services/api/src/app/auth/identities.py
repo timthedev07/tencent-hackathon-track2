@@ -73,7 +73,7 @@ async def create_identity_link(
     session: AsyncSession,
     tenant_id: UUID,
     user_id: UUID,
-    source_connection_id: UUID,
+    source_connection_id: UUID | str,
     provider_subject_id: str,
     *,
     provider_account_type: str | None = None,
