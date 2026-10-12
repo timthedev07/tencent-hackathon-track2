@@ -149,9 +149,8 @@ Perform these steps in the order shown. Record every real URL and provider ID in
 As `SLACK-OWNER` (and, for the full ACL test, with the separate `BOB` and `CAROL` provider identities available):
 
 1. Create public channels `#payment-incident` and `#auth-design`.
-2. Create private channel `#security-incident-private`. For the full ACL test, invite the owner account and `CAROL`; do not invite `BOB`.
-3. Create private channel `#revocation-test`. For the full revocation test, invite `BOB` initially. Keep this channel separate from the security channel.
-4. Record channel IDs and permalinks.
+2. Create private channel `#revocation-test`. For the full revocation test, invite `BOB` initially.
+3. Record channel IDs and permalinks.
 
 ### 5.2 Atlassian
 
@@ -167,10 +166,10 @@ As `ATLAS-OWNER`:
 
 As `DRIVE-OWNER`:
 
-1. Create folder `Internal Brain Demo`.
-2. Create folder `Internal Brain Demo / Restricted`. For the full ACL test, share it only with the owner and `CAROL`.
-3. Create folder `Internal Brain Demo / Revocation`. For the full revocation test, initially share the revocation document with `BOB` as Reader.
-4. For the full shared-corpus test, share the normal shared folder with `BOB` as Reader. `DRIVE-OWNER` remains the owner; the application only needs read access for ingestion.
+1. Create three separate top-level folders: `Internal Brain Demo - Shared`, `Internal Brain Demo - Restricted` and `Internal Brain Demo - Revocation`. Do not put the restricted or revocation folder inside the shared folder; Drive permissions can be inherited from a parent.
+2. Share `Internal Brain Demo - Shared` with `BOB` as Reader. Keep `DRIVE-OWNER` as owner.
+3. Share `Internal Brain Demo - Restricted` only with `CAROL` as Reader. Confirm `BOB` has no direct or inherited access.
+4. In `Internal Brain Demo - Revocation`, share only the revocation document with `BOB` as Reader initially. Keep the folder itself unshared.
 5. Record document IDs, URLs and the exact sharing change times.
 
 ## 6. Create the test corpus

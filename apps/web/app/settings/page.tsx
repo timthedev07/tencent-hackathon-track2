@@ -51,7 +51,7 @@ function SettingsContent() {
   }
 
   const hasToken = Boolean(getAuthToken());
-  const connectedCount = Object.values(connections).filter((connection) => connection.connected).length;
+  const connectedCount = PROVIDERS.filter((provider) => connections[provider.source]?.connected).length;
 
   if (loading) return <SettingsLoading />;
 
