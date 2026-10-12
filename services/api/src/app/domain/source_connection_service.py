@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import cast
@@ -80,6 +81,7 @@ def publish_source_backfill(connection_id: str, tenant_id: str) -> None:
     run_backfill.apply_async(  # type: ignore[union-attr]
         args=[connection_id, tenant_id],
         queue="backfill",
+        retry=False,
     )
 
 
@@ -114,7 +116,7 @@ async def queue_connection_sync(
         raise SourceConnectionNotSyncableError("SOURCE_CONNECTION_NOT_SYNCABLE")
 
     try:
-        publisher(str(connection.id), str(user.tenant_id))
+        await asyncio.to_thread(publisher, str(connection.id), str(user.tenant_id))
     except Exception as exc:
         raise SourceSyncUnavailableError("SOURCE_SYNC_FAILED") from exc
 

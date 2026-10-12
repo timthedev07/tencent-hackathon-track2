@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
+import threading
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -245,6 +247,63 @@ async def test_queue_sync_wraps_broker_failure() -> None:
             UUID(str(connection.id)),
             fail_publish,
         )
+
+
+async def test_queue_sync_does_not_block_the_event_loop() -> None:
+    service = _service()
+    actor = _actor()
+    connection = _connection(actor)
+    started = threading.Event()
+    release = threading.Event()
+
+    def wait_for_release(connection_id: str, tenant_id: str) -> None:
+        started.set()
+        release.wait(timeout=1)
+
+    task = asyncio.create_task(
+        service.queue_connection_sync(
+            _Session(selected=connection),
+            actor,
+            UUID(str(connection.id)),
+            wait_for_release,
+        )
+    )
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if started.is_set():
+            break
+    was_pending_while_publisher_waited = not task.done()
+    release.set()
+    await task
+
+    assert started.is_set()
+    assert was_pending_while_publisher_waited
+
+
+def test_backfill_publisher_uses_exact_ids_and_bounded_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service()
+    backfill = importlib.import_module("worker.tasks.backfill")
+    published: list[dict[str, Any]] = []
+
+    def record_publish(*args: Any, **kwargs: Any) -> None:
+        published.append({"args": args, "kwargs": kwargs})
+
+    monkeypatch.setattr(backfill.run_backfill, "apply_async", record_publish)
+
+    service.publish_source_backfill("connection-id", "tenant-id")
+
+    assert published == [
+        {
+            "args": (),
+            "kwargs": {
+                "args": ["connection-id", "tenant-id"],
+                "queue": "backfill",
+                "retry": False,
+            },
+        }
+    ]
 
 
 def _route_app(actor: AuthenticatedUser, session: _Session) -> FastAPI:

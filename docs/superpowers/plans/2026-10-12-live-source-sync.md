@@ -187,4 +187,3 @@ Expected: PASS with the PostgreSQL/Celery-marked tests skipped when their explic
 git add services/api/src/app/models/gateway.py services/api/src/app/retrieval/pipeline.py tests/retrieval/test_model_gateway_metadata.py
 git commit -m "fix: report the model gateway actually used"
 ```
-

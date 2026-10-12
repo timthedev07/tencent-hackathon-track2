@@ -116,3 +116,41 @@ test('labels live connections and queues an exact connection sync', async () => 
   expect(api.syncConnection).toHaveBeenCalledWith('drive-connection')
   expect(container.textContent).toContain('Google Drive sync queued.')
 })
+
+test('exposes both exact Atlassian connections without double-counting the provider', async () => {
+  api.getConnections.mockResolvedValue({
+    dataMode: 'live',
+    connections: [
+      {
+        source: 'confluence',
+        connected: true,
+        display_name: 'Jess Atlassian',
+        connectionId: 'confluence-connection',
+        mode: 'delegated_oauth',
+        canSync: true,
+      },
+      {
+        source: 'jira',
+        connected: true,
+        display_name: 'Jess Atlassian',
+        connectionId: 'jira-connection',
+        mode: 'delegated_oauth',
+        canSync: true,
+      },
+    ],
+  })
+  api.syncConnection.mockResolvedValue({ connectionId: 'jira-connection', status: 'queued' })
+
+  await renderSettings()
+
+  expect(container.textContent).toContain('1 of 3 connected')
+  const buttons = Array.from(container.querySelectorAll('button'))
+  expect(buttons.some((button) => button.textContent?.trim() === 'Sync Confluence')).toBe(true)
+  const jiraButton = buttons.find((button) => button.textContent?.trim() === 'Sync Jira')
+  expect(jiraButton).toBeDefined()
+
+  await act(async () => jiraButton?.click())
+
+  expect(api.syncConnection).toHaveBeenCalledWith('jira-connection')
+  expect(container.textContent).toContain('Jira sync queued.')
+})

@@ -24,11 +24,28 @@ import {
   type ConnectionStatus,
 } from '@/lib/api/client'
 
-const PROVIDERS = [
+type SourceKey = 'confluence' | 'jira' | 'slack' | 'google_drive'
+
+const SOURCE_LABELS: Record<SourceKey, string> = {
+  confluence: 'Confluence',
+  jira: 'Jira',
+  slack: 'Slack',
+  google_drive: 'Google Drive',
+}
+
+const PROVIDERS: {
+  label: string
+  key: 'atlassian' | 'slack' | 'google'
+  sources: SourceKey[]
+  description: string
+  icon: typeof Link2
+  tint: string
+  dot: string
+}[] = [
   {
     label: 'Atlassian',
-    key: 'atlassian' as const,
-    source: 'confluence',
+    key: 'atlassian',
+    sources: ['confluence', 'jira'],
     description: 'Confluence pages and Jira project knowledge',
     icon: Link2,
     tint: 'text-blue-200',
@@ -36,8 +53,8 @@ const PROVIDERS = [
   },
   {
     label: 'Slack',
-    key: 'slack' as const,
-    source: 'slack',
+    key: 'slack',
+    sources: ['slack'],
     description: 'Threads and conversations you can access',
     icon: MessageCircle,
     tint: 'text-pink-200',
@@ -45,8 +62,8 @@ const PROVIDERS = [
   },
   {
     label: 'Google Drive',
-    key: 'google' as const,
-    source: 'google_drive',
+    key: 'google',
+    sources: ['google_drive'],
     description: 'Documents and shared workspace files',
     icon: Cloud,
     tint: 'text-emerald-200',
@@ -90,7 +107,10 @@ function SettingsContent() {
     const source = searchParams.get('source')
     const errorMsg = searchParams.get('error')
     if (!source) return
-    const label = PROVIDERS.find((provider) => provider.source === source)?.label ?? source
+    const label =
+      PROVIDERS.find(
+        (provider) => provider.key === source || provider.sources.includes(source as SourceKey),
+      )?.label ?? source
     const update = window.setTimeout(() => {
       if (status === 'connected') {
         setSuccess(`${label} connected successfully.`)
@@ -130,8 +150,8 @@ function SettingsContent() {
   }
 
   const hasToken = Boolean(getAuthToken())
-  const connectedCount = Object.values(connections).filter(
-    (connection) => connection.connected,
+  const connectedCount = PROVIDERS.filter((provider) =>
+    provider.sources.some((source) => connections[source]?.connected),
   ).length
 
   if (loading) return <SettingsLoading />
@@ -190,12 +210,26 @@ function SettingsContent() {
 
       <div className="grid gap-4 lg:grid-cols-3">
         {PROVIDERS.map((provider) => {
-          const connection = connections[provider.source]
-          const connected = connection?.connected ?? false
+          const providerConnections = provider.sources
+            .map((source) => connections[source])
+            .filter((connection): connection is ConnectionStatus => connection?.connected === true)
+          const syncableConnections = providerConnections.filter(
+            (
+              connection,
+            ): connection is ConnectionStatus & {
+              connectionId: string
+            } => connection.canSync && connection.connectionId !== null,
+          )
+          const connected = providerConnections.length > 0
+          const displayNames = [
+            ...new Set(
+              providerConnections.map((connection) => connection.display_name ?? 'Identity linked'),
+            ),
+          ].join(', ')
           const Icon = provider.icon
           return (
             <GlassPanel
-              key={provider.source}
+              key={provider.key}
               className="flex min-h-[260px] flex-col p-6"
               intensity={connected ? 'strong' : 'soft'}
               interactive
@@ -225,28 +259,37 @@ function SettingsContent() {
               <h2 className="mt-7 text-base font-semibold text-white">{provider.label}</h2>
               <p className="mt-2 text-xs leading-5 text-white/45">{provider.description}</p>
               {connected && (
-                <p className="mt-3 truncate text-[11px] text-white/60">
-                  {connection.display_name ?? 'Identity linked'}
-                </p>
+                <p className="mt-3 truncate text-[11px] text-white/60">{displayNames}</p>
               )}
               <div className="mt-auto grid gap-2">
-                {connection?.canSync && connection.connectionId && (
-                  <button
-                    className="inline-flex h-10 items-center justify-center gap-2 rounded-lg text-xs font-semibold primary-glow disabled:opacity-40"
-                    onClick={() => handleSync(connection.connectionId!, provider.label)}
-                    disabled={syncing === connection.connectionId}
-                  >
-                    {syncing === connection.connectionId ? (
-                      <>
-                        <Loader2 size={14} className="animate-spin" /> Queuing…
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw size={14} /> Sync now
-                      </>
-                    )}
-                  </button>
-                )}
+                {syncableConnections.map((connection) => {
+                  const sourceLabel = SOURCE_LABELS[connection.source as SourceKey]
+                  const syncLabel =
+                    syncableConnections.length > 1 ? `Sync ${sourceLabel}` : 'Sync now'
+                  return (
+                    <button
+                      key={connection.connectionId}
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-lg text-xs font-semibold primary-glow disabled:opacity-40"
+                      onClick={() =>
+                        handleSync(
+                          connection.connectionId,
+                          syncableConnections.length > 1 ? sourceLabel : provider.label,
+                        )
+                      }
+                      disabled={syncing === connection.connectionId}
+                    >
+                      {syncing === connection.connectionId ? (
+                        <>
+                          <Loader2 size={14} className="animate-spin" /> Queuing…
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw size={14} /> {syncLabel}
+                        </>
+                      )}
+                    </button>
+                  )
+                })}
                 <button
                   className="inline-flex h-10 items-center justify-center gap-2 rounded-lg text-xs font-medium ghost-glass disabled:opacity-40"
                   onClick={() => handleConnect(provider.key, provider.label)}
