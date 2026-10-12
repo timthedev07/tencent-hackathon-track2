@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # ── Datastores ─────────────────────────────────────────────────
     DATABASE_URL: str = "postgresql+asyncpg://assistant:assistant@localhost:5432/assistant"
-    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_URL: str = "redis://localhost:6382/0"
     OTEL_EXPORTER_OTLP_ENDPOINT: str = ""
     SERVICE_NAME: str = "enterprise-assistant-api"
     LOG_LEVEL: str = "INFO"

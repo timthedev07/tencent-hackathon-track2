@@ -55,7 +55,7 @@ Alembic migrations handle the rest.
 ## 3. Redis
 
 ```env
-REDIS_URL=redis://localhost:6379/0
+REDIS_URL=redis://localhost:6382/0
 ```
 
 ### Local setup (Docker Compose)
@@ -63,7 +63,7 @@ REDIS_URL=redis://localhost:6379/0
 The `docker-compose.yml` starts a Redis container. Defaults:
 
 - **Host:** `localhost`
-- **Port:** `6379`
+- **Port:** `6382` on the host (`6379` inside the Redis container)
 - **DB index:** `0`
 
 For production, use a managed Redis instance (e.g., AWS ElastiCache, Upstash, or Redis Cloud).
