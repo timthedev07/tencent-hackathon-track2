@@ -19,6 +19,8 @@ The OAuth flow works as follows:
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -26,12 +28,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_authenticated_user
-from app.auth.identities import find_identity_link
 from app.auth.oauth_state import create_oauth_state, verify_oauth_state
 from app.auth.oidc import AuthenticatedUser
+from app.domain.source_connection_service import (
+    SourceConnectionNotFoundError,
+    SourceConnectionNotSyncableError,
+    SourceConnectionSummary,
+    SourceSyncUnavailableError,
+    list_user_connections,
+    queue_connection_sync,
+)
+from app.domain.source_mode import active_connection_mode
 from app.domain.types import Source
 from app.observability.logging import get_logger
-from app.persistence.models import SourceConnection
 from app.persistence.session import get_session
 from app.settings import get_settings
 
@@ -47,10 +56,19 @@ class ConnectionStatus(BaseModel):
     source: str
     connected: bool
     display_name: str | None = None
+    connectionId: str | None = None
+    mode: str | None = None
+    canSync: bool = False
 
 
 class ConnectionsResponse(BaseModel):
+    dataMode: str
     connections: list[ConnectionStatus]
+
+
+class SyncConnectionResponse(BaseModel):
+    connectionId: str
+    status: str
 
 
 # ── Connection status ────────────────────────────────────────────────
@@ -63,28 +81,65 @@ async def list_connections(
 ) -> ConnectionsResponse:
     """List the current user's connection status for all sources."""
     sources = [Source.CONFLUENCE, Source.JIRA, Source.SLACK, Source.GOOGLE_DRIVE]
+    summaries = await list_user_connections(session, user)
+    by_source: dict[str, list[SourceConnectionSummary]] = {}
+    for summary in summaries:
+        by_source.setdefault(summary.source, []).append(summary)
     result_list: list[ConnectionStatus] = []
 
     for source in sources:
-        # Check if user has a verified identity link for this source
-        link = await find_identity_link(session, user.user_id, source)
-        display_name = None
-        if link is not None:
-            stmt = select(SourceConnection).where(SourceConnection.id == link.source_connection_id)
-            conn_result = await session.execute(stmt)
-            conn = conn_result.scalar_one_or_none()
-            if conn is not None:
-                display_name = conn.display_name
+        matches = by_source.get(source.value, [])
+        summary = matches[0] if len(matches) == 1 else None
 
         result_list.append(
             ConnectionStatus(
                 source=source.value,
-                connected=link is not None,
-                display_name=display_name,
+                connected=summary is not None,
+                display_name=summary.display_name if summary else None,
+                connectionId=str(summary.connection_id) if summary else None,
+                mode=summary.mode if summary else None,
+                canSync=summary is not None and summary.mode == "delegated_oauth",
             )
         )
 
-    return ConnectionsResponse(connections=result_list)
+    return ConnectionsResponse(
+        dataMode=get_settings().SOURCE_DATA_MODE,
+        connections=result_list,
+    )
+
+
+@router.post(
+    "/connections/{connection_id}/sync",
+    response_model=SyncConnectionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def sync_connection(
+    connection_id: UUID,
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> SyncConnectionResponse:
+    """Queue ingestion for one exact delegated-OAuth connection."""
+    try:
+        result = await queue_connection_sync(session, user, connection_id)
+    except SourceConnectionNotFoundError as exc:
+        raise _connection_error(
+            status.HTTP_404_NOT_FOUND,
+            "SOURCE_CONNECTION_NOT_FOUND",
+            "Source connection not found.",
+        ) from exc
+    except SourceConnectionNotSyncableError as exc:
+        raise _connection_error(
+            status.HTTP_409_CONFLICT,
+            "SOURCE_CONNECTION_NOT_SYNCABLE",
+            "Demo sources cannot be synchronised.",
+        ) from exc
+    except SourceSyncUnavailableError as exc:
+        raise _connection_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "SOURCE_SYNC_FAILED",
+            "The source sync could not be queued. Please try again.",
+        ) from exc
+    return SyncConnectionResponse(**result)
 
 
 # ── Atlassian ────────────────────────────────────────────────────────
@@ -96,6 +151,7 @@ async def start_atlassian_oauth(
     authorization: str | None = Header(default=None),
 ) -> OAuthStartResponse:
     """Initiate Atlassian OAuth flow for source identity linking."""
+    _require_live_mode()
     from app.connectors.confluence import start_atlassian_oauth as start
 
     oauth_state = create_oauth_state(user.user_id, user.tenant_id)
@@ -130,6 +186,7 @@ async def start_slack_oauth(
     authorization: str | None = Header(default=None),
 ) -> OAuthStartResponse:
     """Initiate Slack OAuth flow."""
+    _require_live_mode()
     from app.connectors.slack import start_slack_oauth as start
 
     oauth_state = create_oauth_state(user.user_id, user.tenant_id)
@@ -164,6 +221,7 @@ async def start_google_oauth(
     authorization: str | None = Header(default=None),
 ) -> OAuthStartResponse:
     """Initiate Google OAuth flow."""
+    _require_live_mode()
     from app.connectors.google_drive import start_google_oauth as start
 
     oauth_state = create_oauth_state(user.user_id, user.tenant_id)
@@ -190,6 +248,22 @@ async def google_callback(
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _connection_error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"error": {"code": code, "message": message}},
+    )
+
+
+def _require_live_mode() -> None:
+    if active_connection_mode() != "delegated_oauth":
+        raise _connection_error(
+            status.HTTP_409_CONFLICT,
+            "LIVE_MODE_REQUIRED",
+            "Switch SOURCE_DATA_MODE to live before connecting a provider.",
+        )
 
 
 async def _resolve_user_from_state(state: str) -> AuthenticatedUser:
