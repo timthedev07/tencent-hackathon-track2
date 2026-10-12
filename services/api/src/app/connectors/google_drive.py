@@ -8,7 +8,7 @@ from http import HTTPStatus
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.errors import PermanentError
 from app.connectors.http import json_body, request
-from app.connectors.parsing import next_cursor, strip_html
+from app.connectors.parsing import next_cursor, object_list, strip_html
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
@@ -201,7 +201,7 @@ class GoogleDriveConnector:
             },
         )
         payload = json_body(response)
-        files = payload.get("files", [])
+        files = object_list(payload.get("files"))
         return ScanPage(
             objects=[
                 _scan_object(item)
@@ -247,7 +247,7 @@ class GoogleDriveConnector:
         )
         payload = json_body(response)
         changes: list[dict[str, object]] = []
-        for item in payload.get("changes", []):
+        for item in object_list(payload.get("changes")):
             if not isinstance(item, dict):
                 continue
             if item.get("removed") is True:

@@ -7,7 +7,7 @@ from http import HTTPStatus
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.http import json_body, request
-from app.connectors.parsing import flatten_adf, strip_html
+from app.connectors.parsing import flatten_adf, object_list, strip_html
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
@@ -63,7 +63,7 @@ class JiraConnector:
             },
         )
         payload = json_body(response)
-        issues = payload.get("issues", [])
+        issues = object_list(payload.get("issues"))
         objects = [_scan_object(item) for item in issues if isinstance(item, dict)]
         return ScanPage(
             objects=objects,

@@ -7,7 +7,7 @@ from http import HTTPStatus
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.http import json_body, request
-from app.connectors.parsing import next_cursor, strip_html
+from app.connectors.parsing import next_cursor, object_list, strip_html
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
@@ -210,7 +210,9 @@ class ConfluenceConnector:
         )
         payload = json_body(response)
         objects = [
-            _scan_object(item) for item in payload.get("results", []) if isinstance(item, dict)
+            _scan_object(item)
+            for item in object_list(payload.get("results"))
+            if isinstance(item, dict)
         ]
         return ScanPage(objects=objects, next_cursor=next_cursor(payload))
 
@@ -279,7 +281,7 @@ class ConfluenceConnector:
         )
         payload = json_body(response)
         grants: list[dict[str, object]] = []
-        operation_results = payload.get("results", [])
+        operation_results = object_list(payload.get("results"))
         for item in operation_results:
             if not isinstance(item, dict):
                 continue

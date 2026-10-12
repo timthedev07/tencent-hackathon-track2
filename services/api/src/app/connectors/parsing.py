@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, cast
 
 
 class _TextExtractor(HTMLParser):
@@ -51,3 +51,8 @@ def next_cursor(payload: dict[str, Any]) -> str | None:
     if isinstance(links, dict) and links.get("next"):
         return str(links["next"])
     return None
+
+
+def object_list(value: object) -> list[object]:
+    """Return a provider collection only when its JSON shape is a list."""
+    return cast(list[object], value) if isinstance(value, list) else []

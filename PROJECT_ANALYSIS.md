@@ -28,7 +28,7 @@ The main weakness is now full-product integration readiness rather than backend 
 | Query pipeline | Strong prototype | Hybrid retrieval through audited answer generation runs in Celery with a database lease and replayable persisted progress events. |
 | Security controls | Good prototype foundation | Fail-closed checks, live reauthorisation, RLS, encrypted content, and audit-before-response are represented. |
 | Frontend | Feature-complete prototype UI | Login, source settings, query progress, citations, evidence, and audit views exist. Hosted CI verifies the locked npm install, formatting, lint, unit tests, types and production build on Node 22. |
-| Automated tests | Useful and improving | 46 default backend tests pass; four opt-in PostgreSQL/Redis integration tests cover the query worker's critical failure semantics, and hosted backend/frontend quality checks pass. |
+| Automated tests | Useful and improving | 52 default backend tests pass; four opt-in PostgreSQL/Redis integration tests cover the query worker's critical failure semantics, and hosted backend/frontend quality checks pass. |
 | Demo readiness | Medium-high for backend, medium overall | The deterministic backend, worker query path and smoke validator work against PostgreSQL, but the Chronicle UI and a repeatable clean-checkout browser run are still missing. |
 | Production readiness | Low | Identity UX, database roles, broader integration tests, operations and deployment hardening need work. |
 
@@ -269,7 +269,7 @@ The following checks were run against this snapshot:
 
 | Check | Result |
 |---|---|
-| Backend tests | **Pass:** 46 default tests; four infrastructure tests are skipped unless explicitly enabled. |
+| Backend tests | **Pass:** 52 default tests; four infrastructure tests are skipped unless explicitly enabled. |
 | Query execution integration | **Pass locally:** 4 PostgreSQL/Redis/Celery cases, including forced audit failure and redelivery. |
 | Ruff formatting and lint | **Pass:** the repository-wide checks are enforced in hosted CI. |
 | Pyright | **Pass:** 0 errors; existing warning-level annotation debt remains. |
@@ -280,7 +280,7 @@ The following checks were run against this snapshot:
 | Frontend production build | **Pass:** local build and clean Node 22 Docker build. |
 | Browser E2E | Not run; the Playwright test exists but does not yet cover the Chronicle demo journey. |
 
-The 46 passing backend tests cover:
+The 52 passing backend tests cover:
 
 - RRF and retrieval ordering.
 - Context sanitisation and token budgets.

@@ -8,7 +8,7 @@ from app.auth.oidc import AuthenticatedUser
 from app.connectors.errors import ConnectorError, ForbiddenError, PermanentError, RateLimitedError
 from app.connectors.http import json_body, request
 from app.connectors.oauth import pack_tokens
-from app.connectors.parsing import strip_html
+from app.connectors.parsing import object_list, strip_html
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
@@ -201,8 +201,7 @@ class SlackConnector:
         )
         payload = _slack_body(response)
         objects: list[dict[str, object]] = []
-        channels = payload.get("channels")
-        for channel in channels if isinstance(channels, list) else []:
+        for channel in object_list(payload.get("channels")):
             if not isinstance(channel, dict) or not channel.get("id"):
                 continue
             history = await _slack_request(
@@ -210,8 +209,7 @@ class SlackConnector:
                 credential,
                 {"channel": channel["id"], "limit": 100},
             )
-            messages = history.get("messages")
-            for message in messages if isinstance(messages, list) else []:
+            for message in object_list(history.get("messages")):
                 if not isinstance(message, dict) or not message.get("ts"):
                     continue
                 ts = str(message["ts"])
