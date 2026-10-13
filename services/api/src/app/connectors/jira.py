@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from http import HTTPStatus
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.http import json_body, request
-from app.connectors.parsing import flatten_adf, strip_html
+from app.connectors.parsing import flatten_adf, object_list, strip_html
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
@@ -22,6 +23,8 @@ from app.domain.types import (
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+_JIRA_INITIAL_SCAN_JQL = "project IS NOT EMPTY ORDER BY updated ASC"
 
 
 async def start_jira_oauth(user: AuthenticatedUser) -> str:
@@ -50,19 +53,21 @@ class JiraConnector:
         credential: DelegatedCredential | None = None,
     ) -> ScanPage:
         credential = _require_credential(credential)
+        params: dict[str, object] = {
+            "jql": _JIRA_INITIAL_SCAN_JQL,
+            "maxResults": 100,
+            "fields": "summary,updated,project,issuetype,parent",
+        }
+        if cursor:
+            params["nextPageToken"] = cursor
         response = await request(
             "GET",
             _api_url(connection, credential, "/rest/api/3/search/jql"),
             access_token=credential.access_token,
-            params={
-                "jql": "ORDER BY updated ASC",
-                "nextPageToken": cursor or "",
-                "maxResults": 100,
-                "fields": "summary,updated,project,issuetype,parent",
-            },
+            params=params,
         )
         payload = json_body(response)
-        issues = payload.get("issues", [])
+        issues = object_list(payload.get("issues"))
         objects = [_scan_object(item) for item in issues if isinstance(item, dict)]
         return ScanPage(
             objects=objects,
@@ -173,13 +178,13 @@ class JiraConnector:
             return AccessCheckResult(outcome=AccessOutcome.UNKNOWN, reason_code="provider_error")
 
         request_id = response.headers.get("x-arequestid") or response.headers.get("x-request-id")
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             return AccessCheckResult(
                 outcome=AccessOutcome.ALLOW,
                 reason_code="provider_allow",
                 provider_request_id=request_id,
             )
-        if response.status_code == 401:
+        if response.status_code == HTTPStatus.UNAUTHORIZED:
             return AccessCheckResult(
                 outcome=AccessOutcome.EXPIRED_CREDENTIAL,
                 reason_code="credential_expired",
@@ -191,7 +196,7 @@ class JiraConnector:
                 reason_code="object_not_found_or_forbidden",
                 provider_request_id=request_id,
             )
-        if response.status_code == 429:
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             return AccessCheckResult(
                 outcome=AccessOutcome.TIMEOUT,
                 reason_code="provider_rate_limited",

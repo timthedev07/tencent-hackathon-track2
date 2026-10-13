@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from http import HTTPStatus
 from typing import Any
 
 import httpx
@@ -35,7 +36,10 @@ async def request(
     timeout: float = 15.0,  # noqa: ASYNC109
 ) -> httpx.Response:
     """Make a bounded provider request and classify transport failures."""
-    headers = {"Authorization": f"Bearer {access_token}"}
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+    }
     for attempt in range(_MAX_ATTEMPTS):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -58,18 +62,18 @@ async def request(
             continue
 
         if response.status_code not in _RETRYABLE_STATUS_CODES:
-            if response.status_code == 401:
+            if response.status_code == HTTPStatus.UNAUTHORIZED:
                 raise ForbiddenError("Provider credential rejected")
-            if response.status_code == 403:
+            if response.status_code == HTTPStatus.FORBIDDEN:
                 raise ForbiddenError("Provider access forbidden")
-            if response.status_code == 404:
+            if response.status_code == HTTPStatus.NOT_FOUND:
                 raise NotFoundError()
-            if response.status_code >= 400:
+            if response.status_code >= HTTPStatus.BAD_REQUEST:
                 raise PermanentError("Provider rejected the request")
             return response
 
         if attempt == _MAX_ATTEMPTS - 1:
-            if response.status_code == 429:
+            if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
                 retry_after = _retry_after_seconds(response)
                 raise RateLimitedError(retry_after=retry_after)
             raise TransientError("Provider returned a temporary error")

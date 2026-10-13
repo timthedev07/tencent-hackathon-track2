@@ -8,7 +8,7 @@ from app.auth.oidc import AuthenticatedUser
 from app.connectors.errors import ConnectorError, ForbiddenError, PermanentError, RateLimitedError
 from app.connectors.http import json_body, request
 from app.connectors.oauth import pack_tokens
-from app.connectors.parsing import strip_html
+from app.connectors.parsing import object_list, strip_html
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
@@ -190,20 +190,22 @@ class SlackConnector:
         credential: DelegatedCredential | None = None,
     ) -> ScanPage:
         credential = _require_credential(credential)
+        params: dict[str, object] = {
+            "types": "public_channel,private_channel,mpim,im",
+            "limit": 200,
+            "exclude_archived": "true",
+        }
+        if cursor:
+            params["cursor"] = cursor
         response = await request(
             "GET",
             "https://slack.com/api/conversations.list",
             access_token=credential.access_token,
-            params={
-                "types": "public_channel,private_channel,mpim,im",
-                "limit": 200,
-                "cursor": cursor or "",
-                "exclude_archived": "true",
-            },
+            params=params,
         )
         payload = _slack_body(response)
         objects: list[dict[str, object]] = []
-        for channel in payload.get("channels", []):
+        for channel in object_list(payload.get("channels")):
             if not isinstance(channel, dict) or not channel.get("id"):
                 continue
             history = await _slack_request(
@@ -211,7 +213,7 @@ class SlackConnector:
                 credential,
                 {"channel": channel["id"], "limit": 100},
             )
-            for message in history.get("messages", []):
+            for message in object_list(history.get("messages")):
                 if not isinstance(message, dict) or not message.get("ts"):
                     continue
                 ts = str(message["ts"])

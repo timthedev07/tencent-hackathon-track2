@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.errors import PermanentError
 from app.connectors.http import json_body, request
-from app.connectors.parsing import next_cursor, strip_html
+from app.connectors.parsing import next_cursor, object_list, strip_html
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
@@ -23,6 +24,15 @@ from app.domain.types import (
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+_EXPORT_MIME_TYPES = frozenset(
+    {
+        "application/vnd.google-apps.document",
+        "application/vnd.google-apps.presentation",
+        "application/vnd.google-apps.spreadsheet",
+    }
+)
+_DIRECT_TEXT_MIME_TYPES = frozenset({"application/json", "application/xml"})
 
 
 async def start_google_oauth(user: AuthenticatedUser, oauth_state: str = "") -> str:
@@ -194,30 +204,37 @@ class GoogleDriveConnector:
         credential: DelegatedCredential | None = None,
     ) -> ScanPage:
         credential = _require_credential(credential)
+        params: dict[str, object] = {
+            "pageSize": 100,
+            "q": "trashed = false",
+            "spaces": "drive",
+            "includeItemsFromAllDrives": "true",
+            "supportsAllDrives": "true",
+            "fields": (
+                "nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,"
+                "parents,version,permissions,driveId)"
+            ),
+        }
+        if cursor:
+            params["pageToken"] = cursor
         response = await request(
             "GET",
             "https://www.googleapis.com/drive/v3/files",
             access_token=credential.access_token,
-            params={
-                "pageSize": 100,
-                "pageToken": cursor or "",
-                "q": "trashed = false",
-                "spaces": "drive",
-                "includeItemsFromAllDrives": "true",
-                "supportsAllDrives": "true",
-                "fields": (
-                    "nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,"
-                    "parents,version,permissions,driveId)"
-                ),
-            },
+            params=params,
         )
         payload = json_body(response)
-        files = payload.get("files", [])
+        files = object_list(payload.get("files"))
+        indexable_files = [
+            item for item in files if isinstance(item, dict) and _is_indexable(item)
+        ]
+        skipped_count = len(files) - len(indexable_files)
+        if skipped_count:
+            logger.info("Skipping unsupported Google Drive files", count=skipped_count)
         return ScanPage(
             objects=[
                 _scan_object(item)
-                for item in files
-                if isinstance(item, dict) and _is_indexable(item)
+                for item in indexable_files
             ],
             next_cursor=next_cursor(payload),
         )
@@ -258,7 +275,7 @@ class GoogleDriveConnector:
         )
         payload = json_body(response)
         changes: list[dict[str, object]] = []
-        for item in payload.get("changes", []):
+        for item in object_list(payload.get("changes")):
             if not isinstance(item, dict):
                 continue
             if item.get("removed") is True:
@@ -351,7 +368,7 @@ class GoogleDriveConnector:
         request_id = response.headers.get("x-guploader-uploadid") or response.headers.get(
             "x-request-id"
         )
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             data = response.json()
             if data.get("trashed") is True:
                 return AccessCheckResult(
@@ -368,23 +385,23 @@ class GoogleDriveConnector:
             return AccessCheckResult(
                 outcome=(
                     AccessOutcome.EXPIRED_CREDENTIAL
-                    if response.status_code == 401
+                    if response.status_code == HTTPStatus.UNAUTHORIZED
                     else AccessOutcome.DENY
                 ),
                 reason_code=(
                     "credential_expired"
-                    if response.status_code == 401
+                    if response.status_code == HTTPStatus.UNAUTHORIZED
                     else "provider_deny"
                 ),
                 provider_request_id=request_id,
             )
-        if response.status_code == 404:
+        if response.status_code == HTTPStatus.NOT_FOUND:
             return AccessCheckResult(
                 outcome=AccessOutcome.DENY,
                 reason_code="object_not_found_or_forbidden",
                 provider_request_id=request_id,
             )
-        if response.status_code == 429:
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             return AccessCheckResult(
                 outcome=AccessOutcome.TIMEOUT,
                 reason_code="provider_rate_limited",
@@ -416,7 +433,12 @@ def _scan_object(item: dict[str, object]) -> dict[str, object]:
 
 
 def _is_indexable(item: dict[str, object]) -> bool:
-    return item.get("mimeType") != "application/vnd.google-apps.folder"
+    mime_type = str(item.get("mimeType") or "")
+    return (
+        mime_type in _EXPORT_MIME_TYPES
+        or mime_type in _DIRECT_TEXT_MIME_TYPES
+        or mime_type.startswith("text/")
+    )
 
 
 def _first_parent(value: object) -> str | None:
@@ -452,30 +474,16 @@ async def _permissions_for_file(
     credential: DelegatedCredential,
     external_object_id: str,
 ) -> list[dict[str, object]]:
-    grants: list[dict[str, object]] = []
-    page_token: str | None = None
-    for _ in range(10):
-        response = await request(
-            "GET",
-            f"https://www.googleapis.com/drive/v3/files/{external_object_id}/permissions",
-            access_token=credential.access_token,
-            params={
-                "supportsAllDrives": "true",
-                "pageSize": 100,
-                "pageToken": page_token or "",
-                "fields": (
-                    "nextPageToken,permissions(id,type,role,displayName,emailAddress,"
-                    "permissionDetails)"
-                ),
-            },
-        )
-        payload = json_body(response)
-        grants.extend(_permissions(payload.get("permissions")))
-        next_value = payload.get("nextPageToken")
-        page_token = str(next_value) if next_value else None
-        if page_token is None:
-            break
-    return grants
+    response = await request(
+        "GET",
+        f"https://www.googleapis.com/drive/v3/files/{external_object_id}",
+        access_token=credential.access_token,
+        params={
+            "supportsAllDrives": "true",
+            "fields": "permissions(id,type,role,displayName,emailAddress,permissionDetails)",
+        },
+    )
+    return _permissions(json_body(response).get("permissions"))
 
 
 async def _content_for_file(
@@ -496,7 +504,7 @@ async def _content_for_file(
             params={"mimeType": export_types[mime_type]},
         )
         return strip_html(response.text)
-    if mime_type.startswith("text/") or mime_type in {"application/json", "application/xml"}:
+    if mime_type.startswith("text/") or mime_type in _DIRECT_TEXT_MIME_TYPES:
         response = await request(
             "GET",
             f"https://www.googleapis.com/drive/v3/files/{external_object_id}",

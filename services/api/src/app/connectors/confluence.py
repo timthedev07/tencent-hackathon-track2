@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 
 from app.auth.oidc import AuthenticatedUser
+from app.connectors.errors import ForbiddenError, NotFoundError
 from app.connectors.http import json_body, request
-from app.connectors.parsing import next_cursor, strip_html
+from app.connectors.parsing import next_cursor, object_list, strip_html
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
@@ -22,6 +24,47 @@ from app.domain.types import (
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+_ATLASSIAN_OAUTH_SCOPES = (
+    "read:page:confluence read:confluence-content.read read:confluence-content.all "
+    "read:confluence-space.summary read:jira-work read:me offline_access"
+)
+
+
+async def get_atlassian_accessible_resources(access_token: str) -> list[dict[str, object]]:
+    """Return the Atlassian sites available to an OAuth access token."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api.atlassian.com/oauth/token/accessible-resources",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                },
+                timeout=10.0,
+            )
+    except httpx.HTTPError as exc:
+        raise ValueError("ATLASSIAN_RESOURCES_UNAVAILABLE") from exc
+
+    if response.status_code == HTTPStatus.UNAUTHORIZED:
+        raise ValueError("SOURCE_CREDENTIAL_EXPIRED")
+    if response.status_code != HTTPStatus.OK:
+        raise ValueError("ATLASSIAN_RESOURCES_UNAVAILABLE")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError("ATLASSIAN_RESOURCES_UNAVAILABLE") from exc
+    if not isinstance(payload, list):
+        raise ValueError("ATLASSIAN_RESOURCES_UNAVAILABLE")  # noqa: TRY004
+    resources = [
+        item for item in payload
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]
+    ]
+    if not resources:
+        raise ValueError("ATLASSIAN_RESOURCES_EMPTY")
+    return resources
 
 
 async def start_atlassian_oauth(user: AuthenticatedUser, oauth_state: str = "") -> str:
@@ -42,10 +85,7 @@ async def start_atlassian_oauth(user: AuthenticatedUser, oauth_state: str = "") 
         {
             "audience": "api.atlassian.com",
             "client_id": settings.ATLASSIAN_CLIENT_ID,
-            "scope": (
-                "read:confluence-content.read read:confluence-content.all "
-                "read:confluence-space.summary read:jira-work read:me offline_access"
-            ),
+            "scope": _ATLASSIAN_OAUTH_SCOPES,
             "redirect_uri": settings.ATLASSIAN_REDIRECT_URI,
             "state": state_val,
             "response_type": "code",
@@ -101,22 +141,18 @@ async def complete_atlassian_oauth(code: str, state: str, user: AuthenticatedUse
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=10.0,
             )
-            if me_res.status_code == 200:
+            if me_res.status_code == HTTPStatus.OK:
                 me_data = me_res.json()
                 account_id = me_data.get("account_id")
                 if account_id:
                     provider_subject = str(account_id)
-            resources_res = await client.get(
-                "https://api.atlassian.com/oauth/token/accessible-resources",
-                headers={"Authorization": f"Bearer {access_token}"},
-                timeout=10.0,
-            )
-            if resources_res.status_code == 200 and resources_res.json():
-                resource = resources_res.json()[0]
-                workspace_id = str(resource.get("id", workspace_id))
-                workspace_name = str(resource.get("name", workspace_name))
     except Exception:
         logger.debug("Could not fetch Atlassian account/resource metadata", exc_info=True)
+
+    resources = await get_atlassian_accessible_resources(access_token)
+    resource = resources[0]
+    workspace_id = str(resource["id"])
+    workspace_name = str(resource.get("name") or workspace_name)
 
     if not provider_subject:
         raise ValueError("ATLASSIAN_IDENTITY_UNAVAILABLE")
@@ -217,7 +253,7 @@ class ConfluenceConnector:
         payload = json_body(response)
         objects = [
             _scan_object(item)
-            for item in payload.get("results", [])
+            for item in object_list(payload.get("results"))
             if isinstance(item, dict)
         ]
         return ScanPage(objects=objects, next_cursor=next_cursor(payload))
@@ -279,15 +315,27 @@ class ConfluenceConnector:
     ) -> FetchAclResult:
         credential = _require_credential(credential)
         cloud_id = _cloud_id(connection, credential)
-        response = await request(
-            "GET",
-            f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki/rest/api/content/{external_object_id}/restriction",
-            access_token=credential.access_token,
-            params={"expand": "restrictions.user,restrictions.group", "limit": 100},
-        )
+        try:
+            response = await request(
+                "GET",
+                f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki/rest/api/content/{external_object_id}/restriction",
+                access_token=credential.access_token,
+                params={"expand": "restrictions.user,restrictions.group", "limit": 100},
+            )
+        except (ForbiddenError, NotFoundError) as exc:
+            # ACL projection is an optimisation. Query-time live access remains
+            # authoritative, so an ACL endpoint that cannot describe a page
+            # must not discard content that was fetched with the delegated
+            # credential. An absent page will be denied by the live check.
+            logger.warning(
+                "Confluence ACL projection unavailable; continuing without local grants",
+                external_object_id=external_object_id,
+                outcome=exc.outcome.value,
+            )
+            return FetchAclResult(outcome=ConnectorOutcome.SUCCESS, grants=[])
         payload = json_body(response)
         grants: list[dict[str, object]] = []
-        operation_results = payload.get("results", [])
+        operation_results = object_list(payload.get("results"))
         for item in operation_results:
             if not isinstance(item, dict):
                 continue
@@ -334,7 +382,6 @@ class ConfluenceConnector:
                 response = await client.get(
                     f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki/api/v2/pages/{external_object_id}",
                     headers={"Authorization": f"Bearer {user_credential.access_token}"},
-                    params={"body-format": "none"},
                 )
         except httpx.TimeoutException:
             return AccessCheckResult(outcome=AccessOutcome.TIMEOUT, reason_code="provider_timeout")
@@ -342,13 +389,13 @@ class ConfluenceConnector:
             return AccessCheckResult(outcome=AccessOutcome.UNKNOWN, reason_code="provider_error")
 
         request_id = response.headers.get("x-arequestid") or response.headers.get("x-request-id")
-        if response.status_code == 200:
+        if response.status_code == HTTPStatus.OK:
             return AccessCheckResult(
                 outcome=AccessOutcome.ALLOW,
                 reason_code="provider_allow",
                 provider_request_id=request_id,
             )
-        if response.status_code == 401:
+        if response.status_code == HTTPStatus.UNAUTHORIZED:
             return AccessCheckResult(
                 outcome=AccessOutcome.EXPIRED_CREDENTIAL,
                 reason_code="credential_expired",
@@ -360,7 +407,7 @@ class ConfluenceConnector:
                 reason_code="object_not_found_or_forbidden",
                 provider_request_id=request_id,
             )
-        if response.status_code == 429:
+        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
             return AccessCheckResult(
                 outcome=AccessOutcome.TIMEOUT,
                 reason_code="provider_rate_limited",
