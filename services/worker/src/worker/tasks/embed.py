@@ -48,7 +48,9 @@ async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
             )
         )
         if version is None:
-            await _complete_run_item(tenant_id, run_id, failed=True)
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="SOURCE_VERSION_MISSING"
+            )
             return {"status": "missing", "source": source}
         chunks = list(
             (
@@ -86,13 +88,17 @@ async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
             )
         except Exception:
             await _quarantine(tenant_id, version_id)
-            await _complete_run_item(tenant_id, run_id, failed=True)
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="EMBEDDING_PROVIDER_FAILED"
+            )
             raise
         if len(generated) != len(missing) or any(
             len(vector) != settings.EMBEDDING_DIMENSION for vector in generated
         ):
             await _quarantine(tenant_id, version_id)
-            await _complete_run_item(tenant_id, run_id, failed=True)
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="EMBEDDING_DIMENSION_MISMATCH"
+            )
             raise ValueError("EMBEDDING_DIMENSION_MISMATCH")
     embeddings = dict(reusable)
     embeddings.update(
@@ -109,7 +115,9 @@ async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
             )
         )
         if version is None:
-            await _complete_run_item(tenant_id, run_id, failed=True)
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="SOURCE_VERSION_MISSING"
+            )
             return {"status": "missing", "source": source}
         chunks = list(
             (
@@ -128,7 +136,9 @@ async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
         if source_object is None or not chunks or any(chunk.embedding is None for chunk in chunks):
             version.ingestion_status = IngestionStatus.QUARANTINED.value
             await session.commit()
-            await _complete_run_item(tenant_id, run_id, failed=True)
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="SOURCE_CHUNKS_MISSING"
+            )
             return {"status": "quarantined", "source": source}
         if source_object.current_version_id and source_object.current_version_id != version.id:
             previous = await session.scalar(
@@ -176,10 +186,21 @@ def _optional_string(message: dict[str, Any], key: str) -> str | None:
     return value
 
 
-async def _complete_run_item(tenant_id: str, run_id: str | None, *, failed: bool = False) -> None:
+async def _complete_run_item(
+    tenant_id: str,
+    run_id: str | None,
+    *,
+    failed: bool = False,
+    failure_message: str | None = None,
+) -> None:
     from worker.tasks.backfill_progress import complete_backfill_item
 
-    await complete_backfill_item(tenant_id, run_id, failed=failed)
+    await complete_backfill_item(
+        tenant_id,
+        run_id,
+        failed=failed,
+        failure_message=failure_message,
+    )
 
 
 async def _quarantine(tenant_id: str, version_id: str) -> None:

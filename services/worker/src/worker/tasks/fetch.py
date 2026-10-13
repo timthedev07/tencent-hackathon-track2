@@ -44,7 +44,16 @@ async def _fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
     external_id = _required(message, "externalObjectId")
     user_id = _optional_string(message, "userId")
     run_id = _optional_string(message, "backfillRunId")
-    context = await load_ingestion_context(tenant_id, connection_id, user_id)
+    try:
+        context = await load_ingestion_context(tenant_id, connection_id, user_id)
+    except ValueError as exc:
+        logger.warning(
+            "Could not load ingestion context",
+            source=message.get("source"),
+            error=str(exc),
+        )
+        await _complete_run_item(tenant_id, run_id, failed=True, failure_message=str(exc))
+        return {"status": "failed", "source": str(message.get("source", "unknown"))}
     source = context.connection.source
     logger.info("Fetching source object", source=source.value)
     try:
@@ -64,7 +73,7 @@ async def _fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
             ConnectorOutcome.PERMANENT_ERROR,
         }:
             await _mark_not_queryable(tenant_id, connection_id, source.value, external_id)
-            await _complete_run_item(tenant_id, run_id, failed=True)
+            await _complete_run_item(tenant_id, run_id, failed=True, failure_message=str(exc))
             return {"status": "not_queryable", "source": source.value}
         raise
 
@@ -85,6 +94,7 @@ async def _fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
         await _complete_run_item(tenant_id, run_id)
         return {"status": "duplicate", "source": source.value}
     next_message = {
+        "schemaVersion": message.get("schemaVersion", 1),
         "tenantId": tenant_id,
         "connectionId": connection_id,
         "sourceObjectId": str(source_object_id),
@@ -119,10 +129,21 @@ def _optional_string(message: dict[str, Any], key: str) -> str | None:
     return value
 
 
-async def _complete_run_item(tenant_id: str, run_id: str | None, *, failed: bool = False) -> None:
+async def _complete_run_item(
+    tenant_id: str,
+    run_id: str | None,
+    *,
+    failed: bool = False,
+    failure_message: str | None = None,
+) -> None:
     from worker.tasks.backfill_progress import complete_backfill_item
 
-    await complete_backfill_item(tenant_id, run_id, failed=failed)
+    await complete_backfill_item(
+        tenant_id,
+        run_id,
+        failed=failed,
+        failure_message=failure_message,
+    )
 
 
 async def _persist_fetched(
@@ -170,7 +191,12 @@ async def _persist_fetched(
             if existing.valid_from is None and result.last_modified_at is not None:
                 existing.valid_from = result.last_modified_at
             await session.commit()
-            return str(source_object.id), str(existing.id), True
+            duplicate = (
+                existing.ingestion_status == IngestionStatus.ACTIVE.value
+                and source_object.is_queryable
+                and source_object.current_version_id == existing.id
+            )
+            return str(source_object.id), str(existing.id), duplicate
         version = ObjectVersion(
             tenant_id=UUID(tenant_id),
             source_object_id=source_object.id,

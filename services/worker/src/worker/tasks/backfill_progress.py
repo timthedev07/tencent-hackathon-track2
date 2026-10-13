@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.persistence.models import BackfillRun
 from app.persistence.session import get_session_factory, set_tenant_context
 from sqlalchemy import select
 
+_BACKFILL_LEASE_TIMEOUT = timedelta(minutes=3)
 
-async def start_backfill_run(tenant_id: str, run_id: str | None) -> None:
+
+async def start_backfill_run(tenant_id: str, run_id: str | None) -> bool:
     if not run_id:
-        return
+        return True
     factory = get_session_factory()
     async with factory() as session:
         await set_tenant_context(session, tenant_id)
@@ -21,10 +23,25 @@ async def start_backfill_run(tenant_id: str, run_id: str | None) -> None:
             .where(BackfillRun.id == UUID(run_id), BackfillRun.tenant_id == UUID(tenant_id))
             .with_for_update()
         )
-        if run is not None and run.status == "queued":
-            run.status = "scanning"
-            run.started_at = datetime.now(UTC)
-            await session.commit()
+        if run is None or run.status != "queued":
+            if run is None or run.status not in {"scanning", "processing"}:
+                return False
+            last_activity = run.updated_at or run.started_at
+            if (
+                last_activity is None
+                or datetime.now(UTC) - last_activity <= _BACKFILL_LEASE_TIMEOUT
+            ):
+                return False
+            run.error_message = None
+            run.completed_at = None
+            run.discovered_count = 0
+            run.enqueued_count = 0
+            run.processed_count = 0
+            run.failed_count = 0
+        run.status = "scanning"
+        run.started_at = datetime.now(UTC)
+        await session.commit()
+        return True
 
 
 async def record_backfill_scan(
@@ -61,6 +78,7 @@ async def complete_backfill_item(
     run_id: str | None,
     *,
     failed: bool = False,
+    failure_message: str | None = None,
 ) -> None:
     """Record one terminal item outcome and close the run when it is complete."""
     if not run_id:
@@ -78,9 +96,16 @@ async def complete_backfill_item(
         run.processed_count += 1
         if failed:
             run.failed_count += 1
+            if failure_message and not run.error_message:
+                run.error_message = failure_message[:500]
         if run.processed_count >= run.enqueued_count:
             run.completed_at = datetime.now(UTC)
-            run.status = "failed" if run.failed_count == run.enqueued_count else "completed"
+            if run.failed_count == run.enqueued_count:
+                run.status = "failed"
+            elif run.failed_count:
+                run.status = "completed_with_errors"
+            else:
+                run.status = "completed"
         await session.commit()
 
 

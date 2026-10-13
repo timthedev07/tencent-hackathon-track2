@@ -47,7 +47,9 @@ async def _chunk_object(message: dict[str, Any]) -> dict[str, Any]:
             )
         )
         if version is None:
-            await _complete_run_item(tenant_id, run_id, failed=True)
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="SOURCE_VERSION_MISSING"
+            )
             return {"status": "missing", "source": source}
         await session.execute(delete(Chunk).where(Chunk.object_version_id == version.id))
         settings = get_settings()
@@ -91,10 +93,21 @@ def _optional_string(message: dict[str, Any], key: str) -> str | None:
     return value
 
 
-async def _complete_run_item(tenant_id: str, run_id: str | None, *, failed: bool = False) -> None:
+async def _complete_run_item(
+    tenant_id: str,
+    run_id: str | None,
+    *,
+    failed: bool = False,
+    failure_message: str | None = None,
+) -> None:
     from worker.tasks.backfill_progress import complete_backfill_item
 
-    await complete_backfill_item(tenant_id, run_id, failed=failed)
+    await complete_backfill_item(
+        tenant_id,
+        run_id,
+        failed=failed,
+        failure_message=failure_message,
+    )
 
 
 def _chunk_text(content: str, title: str | None) -> list[tuple[list[str], str]]:

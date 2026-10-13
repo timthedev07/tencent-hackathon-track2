@@ -46,14 +46,18 @@ async def _normalise_object(message: dict[str, Any]) -> dict[str, Any]:
             )
         )
         if version is None:
-            await _complete_run_item(tenant_id, run_id, failed=True)
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="SOURCE_VERSION_MISSING"
+            )
             return {"status": "missing", "source": source}
-        content = _normalise_text(version.normalised_content)
+        content = _normalise_content(version.normalised_content, version.normalised_title)
         version.normalised_content = content
         if not content:
             version.ingestion_status = IngestionStatus.QUARANTINED.value
             await session.commit()
-            await _complete_run_item(tenant_id, run_id, failed=True)
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="SOURCE_CONTENT_EMPTY"
+            )
             return {"status": "quarantined", "source": source}
         version.ingestion_status = IngestionStatus.NORMALISED.value
         await session.commit()
@@ -81,10 +85,21 @@ def _optional_string(message: dict[str, Any], key: str) -> str | None:
     return value
 
 
-async def _complete_run_item(tenant_id: str, run_id: str | None, *, failed: bool = False) -> None:
+async def _complete_run_item(
+    tenant_id: str,
+    run_id: str | None,
+    *,
+    failed: bool = False,
+    failure_message: str | None = None,
+) -> None:
     from worker.tasks.backfill_progress import complete_backfill_item
 
-    await complete_backfill_item(tenant_id, run_id, failed=failed)
+    await complete_backfill_item(
+        tenant_id,
+        run_id,
+        failed=failed,
+        failure_message=failure_message,
+    )
 
 
 def _normalise_text(value: str | None) -> str:
@@ -92,3 +107,8 @@ def _normalise_text(value: str | None) -> str:
         return ""
     without_controls = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", value)
     return strip_html(without_controls)
+
+
+def _normalise_content(content: str | None, title: str | None) -> str:
+    """Keep title-only provider objects searchable instead of quarantining them."""
+    return _normalise_text(content) or _normalise_text(title)
