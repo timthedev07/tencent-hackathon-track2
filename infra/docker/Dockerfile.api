@@ -24,6 +24,8 @@ COPY packages/ ./packages/
 # Install dependencies
 RUN uv sync --frozen --no-dev
 
+COPY alembic.ini ./
+
 # Set Python path
 ENV PYTHONPATH="/app/services/api/src:/app/services/worker/src"
 

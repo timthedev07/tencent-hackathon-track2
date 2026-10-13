@@ -122,7 +122,7 @@ def _renderer(settings: Any) -> Any:
         return structlog.processors.JSONRenderer(sort_keys=True)
     return structlog.dev.ConsoleRenderer(
         colors=settings.LOG_COLOURS,
-        pad_event=32,
+        pad_event_to=32,
     )
 
 

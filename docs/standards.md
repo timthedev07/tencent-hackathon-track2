@@ -3,15 +3,21 @@
 
 ## 1. Code Formatting
 
-### Frontend (apps/web)
-- **Prettier** with the root `.prettierrc.json` configuration.
-- Run: `yarn prettier --check .` (CI) / `yarn prettier --write .` (local)
+### Frontend and supported source files
+- **Prettier** with the root `.prettierrc.json` configuration for JavaScript,
+  TypeScript, CSS, JSON, YAML, and related source files.
+- Run: `make frontend-format-check` (CI) / `make frontend-format` (local)
 - No exceptions for formatting — the formatter is authoritative.
 
 ### Backend (services/api, services/worker)
 - **Ruff format** with the root `ruff.toml` configuration.
 - Run: `uv run ruff format .` (local) / checked in CI.
 - Line length: 100 characters.
+
+At repository level, `make format` runs both formatters and `make format-check`
+runs both checks. Prettier uses the frontend package's pinned toolchain but
+formats supported source files across the repository; Ruff is the Python
+formatter and linter.
 
 ## 2. Linting
 
