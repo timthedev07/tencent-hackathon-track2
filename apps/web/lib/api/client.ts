@@ -6,8 +6,12 @@ function getToken(): string | null {
   return window.localStorage.getItem('auth_token');
 }
 
-interface ApiError {
-  error: { code: string; message: string };
+interface ApiErrorDetail {
+  error?: { code?: string; message?: string };
+}
+
+interface ApiError extends ApiErrorDetail {
+  detail?: ApiErrorDetail | string;
 }
 
 async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -21,8 +25,10 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
   const response = await fetch(`${API_URL}${API_PREFIX}${path}`, { ...options, headers });
   if (!response.ok) {
     const errorBody = (await response.json().catch(() => null)) as ApiError | null;
-    const code = errorBody?.error?.code ?? 'UNKNOWN_ERROR';
-    const message = errorBody?.error?.message ?? 'An error occurred.';
+    const detailError = typeof errorBody?.detail === 'object' ? errorBody.detail.error : undefined;
+    const error = errorBody?.error ?? detailError;
+    const code = error?.code ?? 'UNKNOWN_ERROR';
+    const message = error?.message ?? (typeof errorBody?.detail === 'string' ? errorBody.detail : 'An error occurred.');
     throw new ApiClientError(code, message, response.status);
   }
   return response.json() as Promise<T>;
@@ -80,15 +86,32 @@ export interface ConnectionStatus {
   source: string;
   connected: boolean;
   display_name: string | null;
+  connectionId: string | null;
 }
-export interface ConnectionsResponse { connections: ConnectionStatus[] }
+export interface ConnectionsResponse {
+  connections: ConnectionStatus[];
+}
 
 export async function getConnections(): Promise<ConnectionsResponse> {
   return apiFetch<ConnectionsResponse>('/oauth/connections');
 }
 
+export interface SyncConnectionResponse { connectionId: string; runId: string; status: 'queued' }
+
+export async function syncConnection(connectionId: string): Promise<SyncConnectionResponse> {
+  return apiFetch<SyncConnectionResponse>(`/oauth/connections/${connectionId}/sync`, {
+    method: 'POST',
+  });
+}
+
+export async function restartConnection(connectionId: string): Promise<SyncConnectionResponse> {
+  return apiFetch<SyncConnectionResponse>(`/oauth/connections/${connectionId}/restart`, {
+    method: 'POST',
+  });
+}
+
 export interface BackfillRunStatus {
-  id: string; source: string; status: 'queued' | 'scanning' | 'processing' | 'completed' | 'failed';
+  id: string; source: string; status: 'queued' | 'scanning' | 'processing' | 'completed' | 'completed_with_errors' | 'failed';
   discoveredCount: number; enqueuedCount: number; processedCount: number; failedCount: number;
   errorMessage: string | null; startedAt: string | null; completedAt: string | null;
 }

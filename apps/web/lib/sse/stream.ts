@@ -26,6 +26,7 @@ const API_PREFIX = '/v1';
 export class SseStream {
   private abortController: AbortController | null = null;
   private reconnectAttempts = 0;
+  private lastEventId = 0;
   private readonly maxReconnectAttempts = 5;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -39,8 +40,13 @@ export class SseStream {
     }
     this.abortController = new AbortController();
     try {
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        Accept: 'text/event-stream',
+      };
+      if (this.lastEventId > 0) headers['Last-Event-ID'] = String(this.lastEventId);
       const response = await fetch(`${API_URL}${API_PREFIX}/queries/${this.queryId}/events`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+        headers,
         signal: this.abortController.signal,
         cache: 'no-store',
       });
@@ -79,6 +85,7 @@ export class SseStream {
     const decoder = new TextDecoder();
     let buffer = '';
     let eventName = '';
+    let eventId = '';
     let data = '';
     const terminalEvents = new Set(['query.completed', 'query.partial', 'query.denied', 'query.failed']);
     const dispatchEvent = (): boolean => {
@@ -91,8 +98,10 @@ export class SseStream {
         throw new SseConnectionError('The search stream returned invalid progress data.', undefined, 'INVALID_STREAM_EVENT');
       }
       this.handlers.onEvent({ event: eventName as SseEventType, data: { queryId: parsed.queryId ?? this.queryId, message: parsed.message, errorCode: parsed.errorCode } });
+      if (eventId) this.lastEventId = Number.parseInt(eventId, 10) || this.lastEventId;
       const isTerminal = terminalEvents.has(eventName);
       eventName = '';
+      eventId = '';
       data = '';
       if (isTerminal) this.close();
       return isTerminal;
@@ -100,6 +109,7 @@ export class SseStream {
 
     const processLine = (line: string): boolean => {
       if (line.startsWith('event:')) eventName = line.slice(6).trim();
+      else if (line.startsWith('id:')) eventId = line.slice(3).trim();
       else if (line.startsWith('data:')) data += line.slice(5).trim();
       else if (line === '') return dispatchEvent();
       return false;

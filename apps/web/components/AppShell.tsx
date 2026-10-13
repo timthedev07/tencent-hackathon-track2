@@ -25,15 +25,18 @@ const navigation = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [signedIn, setSignedIn] = useState(false);
+  const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'guest'>('checking');
   const [accountLabel, setAccountLabel] = useState('Guest');
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const publicPath = pathname === '/' || pathname === '/login';
 
   useEffect(() => {
     const refresh = window.setTimeout(() => {
       const token = getAuthToken();
       const devSubject = token?.startsWith('dev-') ? token.slice(4) : null;
-      setSignedIn(Boolean(token));
+      const signedIn = Boolean(token);
+      setAuthStatus(signedIn ? 'authenticated' : 'guest');
+      if (!signedIn && !publicPath) router.replace('/login');
       setAccountLabel(
         devSubject
           ? devSubject.charAt(0).toUpperCase() + devSubject.slice(1)
@@ -43,13 +46,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       );
     }, 0);
     return () => window.clearTimeout(refresh);
-  }, [pathname]);
+  }, [pathname, publicPath, router]);
 
   if (pathname === '/login') return <>{children}</>;
+  if (!publicPath && (authStatus === 'checking' || authStatus === 'guest')) return null;
 
   function handleSignOut() {
     clearAuthToken();
-    setSignedIn(false);
+    setAuthStatus('guest');
     setAccountLabel('Guest');
     router.push('/login');
   }
@@ -108,11 +112,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="account-wrap">
               <button className="account-button" onClick={() => setAccountMenuOpen((open) => !open)} aria-expanded={accountMenuOpen}>
                 <span className="account-avatar"><UserRound size={15} /></span>
-                <span className="account-label">{signedIn ? accountLabel : 'Guest'}</span>
+                <span className="account-label">{authStatus === 'authenticated' ? accountLabel : 'Guest'}</span>
               </button>
               {accountMenuOpen && (
                 <GlassPanel outerClassName="account-menu" intensity="strong">
-                  {signedIn ? (
+                  {authStatus === 'authenticated' ? (
                     <button className="account-menu-item" onClick={handleSignOut}><LogOut size={15} /> Sign out</button>
                   ) : (
                     <Link className="account-menu-item" href="/login"><UserRound size={15} /> Sign in</Link>

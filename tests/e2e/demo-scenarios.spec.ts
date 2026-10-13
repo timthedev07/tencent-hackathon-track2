@@ -21,7 +21,7 @@ test.describe('Demo scenarios', () => {
   });
 
   test('3. Permission revocation shows access revoked', async ({ page }) => {
-    // This test requires fixture data where access was revoked after query
+    // This test requires a provider permission change between query stages.
     await page.goto('/query');
     // Verify the UI handles access_revoked state
     expect(true).toBe(true);
