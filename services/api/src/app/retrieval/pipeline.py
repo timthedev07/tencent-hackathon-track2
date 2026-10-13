@@ -21,7 +21,7 @@ import time
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.chain import append_event
@@ -46,7 +46,9 @@ from app.persistence.models import (
     Chunk,
     EvidenceItem,
     ObjectVersion,
+    QueryEvent,
     QueryRun,
+    SourceConnection,
     SourceObject,
 )
 from app.persistence.session import get_session_factory, set_tenant_context
@@ -80,8 +82,34 @@ async def _update_status(session: AsyncSession, query_id: UUID, status: str) -> 
     run = (
         await session.execute(select(QueryRun).where(QueryRun.id == query_id))
     ).scalar_one_or_none()
-    if run is not None:
+    if run is not None and run.status != status:
         run.status = status
+        event_type, message = _QUERY_STAGE_EVENTS.get(
+            status, (f"query.{status}", "Query progress updated")
+        )
+        last_sequence = await session.scalar(
+            select(func.max(QueryEvent.sequence_no)).where(QueryEvent.query_id == query_id)
+        )
+        session.add(
+            QueryEvent(
+                tenant_id=run.tenant_id,
+                query_id=query_id,
+                sequence_no=(last_sequence or 0) + 1,
+                event_type=event_type,
+                payload={"message": message},
+            )
+        )
+
+
+_QUERY_STAGE_EVENTS = {
+    QueryStatus.AUTHENTICATED.value: ("query.authenticated", "Checking your identity"),
+    QueryStatus.CANDIDATES.value: ("query.retrieving", "Searching connected sources"),
+    QueryStatus.REAUTHORISED.value: ("query.reauthorising", "Checking your current access"),
+    QueryStatus.RERANKED.value: ("query.reranking", "Ranking authorised evidence"),
+    QueryStatus.COMPILED.value: ("query.generating", "Preparing a grounded answer"),
+    QueryStatus.GENERATED.value: ("query.verifying", "Verifying citations"),
+    QueryStatus.VERIFIED.value: ("query.auditing", "Saving the audit record"),
+}
 
 
 async def _has_searchable_content(session: AsyncSession, tenant_id: UUID) -> bool:
@@ -94,6 +122,7 @@ async def _has_searchable_content(session: AsyncSession, tenant_id: UUID) -> boo
         select(Chunk.id)
         .join(ObjectVersion, Chunk.object_version_id == ObjectVersion.id)
         .join(SourceObject, ObjectVersion.source_object_id == SourceObject.id)
+        .join(SourceConnection, SourceObject.source_connection_id == SourceConnection.id)
         .where(
             Chunk.tenant_id == tenant_id,
             SourceObject.tenant_id == tenant_id,
@@ -185,9 +214,10 @@ async def _audit_commit(
     status: str,
     partial_sources: list[str] | None = None,
     error_code: str | None = None,
+    model_version: str | None = None,
+    embedding_version: str | None = None,
 ) -> None:
     cm = get_credential_manager()
-    settings = get_settings()
     encrypted_answer = cm.encrypt_bytes(answer.model_dump_json().encode("utf-8"))
 
     run = (
@@ -199,13 +229,32 @@ async def _audit_commit(
         run.answer_ciphertext = encrypted_answer.ciphertext
         run.completed_at = datetime.now(UTC)
         run.latency_ms = int((datetime.now(UTC) - run.started_at).total_seconds() * 1000)
-        run.model_version = settings.GENERATION_MODEL
+        run.model_version = model_version
+        run.embedding_version = embedding_version
         run.prompt_version = "answer_v1"
         run.retriever_version = "rrf_v1"
         run.reranker_version = "deterministic-authority-v1"
         run.context_policy_version = "xml_v1"
         if partial_sources:
             run.partial_sources = partial_sources
+        last_sequence = await session.scalar(
+            select(func.max(QueryEvent.sequence_no)).where(QueryEvent.query_id == query_id)
+        )
+        terminal_messages = {
+            QueryStatus.COMPLETED.value: "Answer ready",
+            QueryStatus.PARTIAL.value: "Answer ready with source warnings",
+            QueryStatus.DENIED.value: "No authorised evidence was available",
+            QueryStatus.FAILED.value: "The query failed",
+        }
+        session.add(
+            QueryEvent(
+                tenant_id=run.tenant_id,
+                query_id=query_id,
+                sequence_no=(last_sequence or 0) + 1,
+                event_type=f"query.{status}",
+                payload={"message": terminal_messages.get(status, "Query finished")},
+            )
+        )
 
     for source_object_id, decision_result in access_decisions.items():
         source = object_source_map.get(source_object_id)
@@ -277,6 +326,8 @@ async def _audit_terminal_result(
     partial_sources: list[str] | None = None,
     reranked: list[RerankedEvidence] | None = None,
     error_code: str | None = None,
+    model_version: str | None = None,
+    embedding_version: str | None = None,
 ) -> None:
     factory = get_session_factory()
     async with factory() as session:
@@ -292,6 +343,8 @@ async def _audit_terminal_result(
             status=status,
             partial_sources=partial_sources,
             error_code=error_code,
+            model_version=model_version,
+            embedding_version=embedding_version,
         )
         await session.commit()
 
@@ -342,7 +395,7 @@ async def run_query_pipeline(  # noqa: PLR0911
             }
 
         gateway = get_model_gateway()
-        query_embedding = await gateway.embed([query_text], settings.EMBEDDING_MODEL)
+        query_embedding = await gateway.embed([query_text], gateway.embedding_model_version)
         embedding = query_embedding[0] if query_embedding else []
 
         async with factory() as session:
@@ -364,6 +417,7 @@ async def run_query_pipeline(  # noqa: PLR0911
                 tenant_id=user.tenant_id,
                 answer=_terminal_answer(),
                 status=QueryStatus.DENIED.value,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
 
@@ -399,6 +453,7 @@ async def run_query_pipeline(  # noqa: PLR0911
                 status=QueryStatus.DENIED.value,
                 access_decisions=local_denied_results,
                 object_source_map=local_object_source_map,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
 
@@ -445,6 +500,7 @@ async def run_query_pipeline(  # noqa: PLR0911
                 status=QueryStatus.DENIED.value,
                 access_decisions=all_access_results,
                 object_source_map=all_object_source_map,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
 
@@ -464,6 +520,7 @@ async def run_query_pipeline(  # noqa: PLR0911
                 status=QueryStatus.DENIED.value,
                 access_decisions=all_access_results,
                 object_source_map=all_object_source_map,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
 
@@ -537,6 +594,8 @@ async def run_query_pipeline(  # noqa: PLR0911
                 object_source_map=all_object_source_map,
                 status=final_status,
                 partial_sources=list(partial_sources) if partial_sources else None,
+                model_version=gateway.generation_model_version,
+                embedding_version=gateway.embedding_model_version,
             )
             await session.commit()
 

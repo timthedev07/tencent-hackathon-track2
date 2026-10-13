@@ -25,6 +25,7 @@ TENANT_SCOPED_TABLES = [
     "backfill_runs",
     "webhook_deliveries",
     "query_runs",
+    "query_events",
     "access_decisions",
     "evidence_items",
     "audit_events",

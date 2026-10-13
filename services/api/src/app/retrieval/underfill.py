@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.types import Source
 from app.observability.logging import get_logger
 from app.observability.metrics import RETRIEVAL_UNDERFILL
-from app.persistence.models import Chunk, ObjectVersion, SourceObject
+from app.persistence.models import Chunk, ObjectVersion, SourceConnection, SourceObject
 from app.retrieval.lexical import LexicalHit, lexical_search
 from app.retrieval.vector import VectorHit, vector_search
 from app.settings import get_settings
@@ -74,6 +74,7 @@ async def vector_search_with_fallback(
         )
         .join(ObjectVersion, Chunk.object_version_id == ObjectVersion.id)
         .join(SourceObject, ObjectVersion.source_object_id == SourceObject.id)
+        .join(SourceConnection, SourceObject.source_connection_id == SourceConnection.id)
         .where(
             Chunk.tenant_id == tenant_id,
             SourceObject.tenant_id == tenant_id,

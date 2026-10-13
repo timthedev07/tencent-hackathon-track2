@@ -425,6 +425,7 @@ class QueryRun(Base):
     partial_sources: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     prompt_version: Mapped[str | None] = mapped_column(Text)
     model_version: Mapped[str | None] = mapped_column(Text)
+    embedding_version: Mapped[str | None] = mapped_column(Text)
     retriever_version: Mapped[str | None] = mapped_column(Text)
     reranker_version: Mapped[str | None] = mapped_column(Text)
     context_policy_version: Mapped[str | None] = mapped_column(Text)
@@ -435,6 +436,11 @@ class QueryRun(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     error_code: Mapped[str | None] = mapped_column(Text)
     answer_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+    execution_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    execution_lease_token: Mapped[str | None] = mapped_column(Text)
+    execution_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     __table_args__ = (
         Index(
@@ -445,6 +451,7 @@ class QueryRun(Base):
 
     access_decisions: Mapped[list[AccessDecision]] = relationship(back_populates="query")
     evidence_items: Mapped[list[EvidenceItem]] = relationship(back_populates="query")
+    events: Mapped[list[QueryEvent]] = relationship()
 
 
 class AccessDecision(Base):
@@ -478,6 +485,31 @@ class AccessDecision(Base):
     )
 
     query: Mapped[QueryRun] = relationship(back_populates="access_decisions")
+
+
+class QueryEvent(Base):
+    """Replayable query progress event; SSE is a read-only projection."""
+
+    __tablename__ = "query_events"
+
+    id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    query_id: Mapped[str] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("query_runs.id"), nullable=False
+    )
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("query_id", "sequence_no"),
+        Index("ix_query_events_tenant_query", "tenant_id", "query_id", "sequence_no"),
+    )
 
 
 class EvidenceItem(Base):

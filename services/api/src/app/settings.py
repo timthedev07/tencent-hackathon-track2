@@ -77,7 +77,7 @@ class Settings(BaseSettings):
 
     # ── Query deadlines / intervals ────────────────────────────────
     QUERY_AUTH_DEADLINE_MS: int = 1500
-    QUERY_GENERATION_DEADLINE_MS: int = 6000
+    QUERY_GENERATION_DEADLINE_MS: int = 30000
     RECONCILIATION_INTERVAL_MINUTES: int = 15
 
     # ── Encryption ──────────────────────────────────────────────────
