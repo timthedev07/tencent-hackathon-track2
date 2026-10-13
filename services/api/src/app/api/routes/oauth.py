@@ -22,6 +22,9 @@ The OAuth flow works as follows:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -32,6 +35,12 @@ from app.api.dependencies.auth import get_authenticated_user
 from app.auth.identities import find_identity_link
 from app.auth.oauth_state import create_oauth_state, verify_oauth_state
 from app.auth.oidc import AuthenticatedUser
+from app.domain.source_connection_service import (
+    SourceConnectionNotFoundError,
+    SourceSyncUnavailableError,
+    queue_connection_sync,
+    restart_connection_sync,
+)
 from app.domain.types import Source
 from app.observability.logging import get_logger
 from app.persistence.models import (
@@ -48,6 +57,9 @@ router = APIRouter()
 logger = get_logger(__name__)
 _PREVIEW_LIMIT = 3
 _PREVIEW_SNIPPET_LENGTH = 160
+_BACKFILL_QUEUE_TIMEOUT = timedelta(minutes=2)
+_BACKFILL_SCAN_TIMEOUT = timedelta(minutes=3)
+_BACKFILL_ACTIVITY_TIMEOUT = timedelta(minutes=15)
 
 
 class OAuthStartResponse(BaseModel):
@@ -58,10 +70,17 @@ class ConnectionStatus(BaseModel):
     source: str
     connected: bool
     display_name: str | None = None
+    connectionId: str | None = None
 
 
 class ConnectionsResponse(BaseModel):
     connections: list[ConnectionStatus]
+
+
+class SyncConnectionResponse(BaseModel):
+    connectionId: str
+    runId: str
+    status: str
 
 
 class BackfillRunStatus(BaseModel):
@@ -136,10 +155,67 @@ async def list_connections(
                 source=source.value,
                 connected=link is not None,
                 display_name=display_name,
+                connectionId=str(link.source_connection_id) if link else None,
             )
         )
 
     return ConnectionsResponse(connections=result_list)
+
+
+@router.post(
+    "/connections/{connection_id}/sync",
+    response_model=SyncConnectionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def sync_connection(
+    connection_id: UUID,
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> SyncConnectionResponse:
+    """Queue ingestion for one exact delegated-OAuth connection."""
+    try:
+        result = await queue_connection_sync(session, user, connection_id)
+    except SourceConnectionNotFoundError as exc:
+        raise _connection_error(
+            status.HTTP_404_NOT_FOUND,
+            "SOURCE_CONNECTION_NOT_FOUND",
+            "Source connection not found.",
+        ) from exc
+    except SourceSyncUnavailableError as exc:
+        raise _connection_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "SOURCE_SYNC_FAILED",
+            "The source sync could not be queued. Please try again.",
+        ) from exc
+    return SyncConnectionResponse(**result)
+
+
+@router.post(
+    "/connections/{connection_id}/restart",
+    response_model=SyncConnectionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def restart_connection(
+    connection_id: UUID,
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> SyncConnectionResponse:
+    """Mark an active import as stopped and queue a fresh import."""
+    try:
+        result = await restart_connection_sync(session, user, connection_id)
+    except SourceConnectionNotFoundError as exc:
+        raise _connection_error(
+            status.HTTP_404_NOT_FOUND,
+            "SOURCE_CONNECTION_NOT_FOUND",
+            "Source connection not found.",
+        ) from exc
+    except SourceSyncUnavailableError as exc:
+        raise _connection_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "SOURCE_SYNC_FAILED",
+            "The source sync could not be restarted. Please try again.",
+        ) from exc
+    return SyncConnectionResponse(**result)
 
 
 @router.get("/connections/previews", response_model=BackfillPreviewResponse)
@@ -178,11 +254,39 @@ async def get_backfill_status(
         .order_by(BackfillRun.created_at.desc())
     )
     latest: dict[str, BackfillRunStatus] = {}
+    now = datetime.now(UTC)
+    stale_runs: list[BackfillRun] = []
     for run, source in rows.all():
+        stale_message: str | None = None
+        if (
+            run.status == "queued"
+            and run.created_at is not None
+            and now - run.created_at > _BACKFILL_QUEUE_TIMEOUT
+        ):
+            stale_message = "The import worker did not start. Please retry."
+        elif (
+            run.status == "scanning"
+            and run.updated_at is not None
+            and now - run.updated_at > _BACKFILL_SCAN_TIMEOUT
+        ):
+            stale_message = "The import worker stopped while scanning. Please retry."
+        elif (
+            run.status == "processing"
+            and run.updated_at is not None
+            and now - run.updated_at > _BACKFILL_ACTIVITY_TIMEOUT
+        ):
+            stale_message = "The import worker stopped before completing. Please retry."
+        if stale_message is not None:
+            run.status = "failed"
+            run.error_message = stale_message
+            run.completed_at = now
+            stale_runs.append(run)
         source_value = str(source)
         if source_value in latest:
             continue
         latest[source_value] = _backfill_run_status(run, source_value)
+    if stale_runs:
+        await session.commit()
     return BackfillStatusResponse(runs=list(latest.values()))
 
 
@@ -279,23 +383,33 @@ async def trigger_manual_backfill(
 
 
 def _backfill_run_status(run: BackfillRun, source: str) -> BackfillRunStatus:
+    run_status = run.status
+    if run_status == "completed" and run.failed_count:
+        run_status = "completed_with_errors"
     return BackfillRunStatus(
         id=str(run.id),
         source=source,
-        status=run.status,
+        status=run_status,
         discoveredCount=run.discovered_count,
         enqueuedCount=run.enqueued_count,
         processedCount=run.processed_count,
         failedCount=run.failed_count,
-        errorMessage=_friendly_backfill_error(run.error_message),
+        errorMessage=_friendly_backfill_error(run.error_message, source),
         startedAt=run.started_at.isoformat() if run.started_at else None,
         completedAt=run.completed_at.isoformat() if run.completed_at else None,
     )
 
 
-def _friendly_backfill_error(value: str | None) -> str | None:
+def _friendly_backfill_error(value: str | None, source: str) -> str | None:
     if value == "SOURCE_CREDENTIAL_EXPIRED":
         return "Authorisation expired. Reconnect this source, then sync again."
+    if value == "forbidden: Provider credential rejected" and source == "confluence":
+        return (
+            "Atlassian rejected this grant. Enable read:page:confluence in the app, "
+            "reconnect Atlassian, then sync again."
+        )
+    if value == "forbidden: Provider credential rejected" and source == "jira":
+        return "Atlassian rejected this grant. Reconnect Atlassian, then sync again."
     return value
 
 
@@ -418,6 +532,15 @@ async def atlassian_callback(
                 "Atlassian identity could not be verified. Enable the User Identity API "
                 "and read:me, then reconnect."
             ),
+            "ATLASSIAN_RESOURCES_EMPTY": (
+                "No Atlassian site was granted to Relay. Check the app permissions, then reconnect."
+            ),
+            "ATLASSIAN_RESOURCES_UNAVAILABLE": (
+                "Atlassian sites could not be verified. Please try connecting again."
+            ),
+            "SOURCE_CREDENTIAL_EXPIRED": (
+                "The Atlassian authorisation expired while connecting. Please try again."
+            ),
             "IDENTITY_LINK_ALREADY_CLAIMED": (
                 "This Atlassian account is already linked to another Relay user."
             ),
@@ -524,6 +647,13 @@ async def google_callback(
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _connection_error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"error": {"code": code, "message": message}},
+    )
 
 
 async def _resolve_user_from_state(state: str) -> AuthenticatedUser:
