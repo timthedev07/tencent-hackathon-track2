@@ -107,9 +107,9 @@ Tamper-evident hash chain: `SHA-256(canonical_json(event) || previous_hash)`. Ex
 | `GET` | `/health/live` | Liveness |
 | `GET` | `/health/ready` | Readiness (DB, Redis, migrations) |
 
-## Fixture Model (Section 51)
+## Provider data model
 
-Tenant A with users Alice, Bob, compliance user (Carol). Public + restricted objects across all 4 sources. Scripted permission-change fixtures for revocation, content update, deletion, and ACL change scenarios.
+Users connect their real Confluence, Jira, Slack and Google Drive workspaces through delegated OAuth. Provider permissions are checked again at query time.
 
 ## 5 Demo Scenarios
 
@@ -148,8 +148,5 @@ Everything else in the system should be designed around preserving that property
 ## Key Files
 
 - Spec: `tencent_hackathon_implementation_spec.md`
-- Seed dataset: `packages/fixtures/seed_dataset.json`
-- Source fixtures: `packages/fixtures/{confluence,jira,slack,drive}/`
-- Seed script: `scripts/seed_fixtures.py`
 - Env template: `.env.example`
 - Credential setup guide: `docs/credentials-setup.md`

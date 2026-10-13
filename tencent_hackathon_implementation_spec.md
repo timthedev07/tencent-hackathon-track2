@@ -407,11 +407,6 @@ Hosted demo:
 │   │   ├── openapi/
 │   │   ├── generated/
 │   │   └── schemas/
-│   └── fixtures/
-│       ├── confluence/
-│       ├── jira/
-│       ├── slack/
-│       └── drive/
 │
 ├── alembic/
 │   └── versions/
@@ -2886,7 +2881,7 @@ live allow
 live deny
 ```
 
-Use provider fixtures through `respx` or equivalent.
+Use isolated provider test doubles through `respx` or equivalent.
 
 ---
 
@@ -2912,13 +2907,13 @@ Integration suite shall verify:
 
 ---
 
-## 50. End-to-End Demo Tests
+## 50. End-to-End Provider Tests
 
-Use Playwright against a deterministic fixture environment.
+Use Playwright against configured provider test workspaces.
 
 Automate the five demo scenarios.
 
-The demo fixture provider adapters may operate against synthetic source data while the Stage 0 spike separately proves real provider authorisation semantics.
+Provider contract tests may use isolated test doubles, while the Stage 0 spike separately proves real provider authorisation semantics.
 
 Key assertion:
 
@@ -2926,30 +2921,13 @@ Key assertion:
 no demo scenario should depend on manual database editing during presentation
 ```
 
-Provide a reset script.
-
 ---
 
-## 51. Synthetic Fixture Model
+## 51. Live Provider Data Model
 
-`packages/fixtures` should include:
-
-```text
-tenant A
-  user alice
-  user bob
-  compliance user
-  confluence public-to-team page
-  confluence restricted page
-  jira shared issue
-  jira restricted issue
-  slack public channel thread
-  slack private channel thread
-  drive shared document
-  drive restricted document
-```
-
-Include scripted permission-change fixtures.
+The application uses delegated OAuth connections to the real Confluence, Jira,
+Slack and Google Drive workspaces. Provider contract tests use isolated test
+doubles and never populate the application with local fixture data.
 
 ---
 
@@ -3140,7 +3118,7 @@ On main/release:
 
 ```text
 10. build containers
-11. end-to-end fixture demo
+11. end-to-end provider demo
 12. golden retrieval backtest
 13. audit-chain verification test
 ```
@@ -3239,7 +3217,7 @@ If one source cannot meet this requirement, the product claim must be narrowed r
 - structlog;
 - OpenTelemetry;
 - Prometheus metrics;
-- synthetic fixtures;
+- provider contract test doubles;
 - CI.
 
 ### Exit criteria
@@ -3288,7 +3266,7 @@ reconciliation
 
 ### Exit criteria
 
-All four connectors behave through the common Protocol and fixture tests.
+All four connectors behave through the common Protocol and contract tests.
 
 ---
 
@@ -3362,7 +3340,7 @@ audit write failure
 
 Every P0 failure is fail-closed.
 
-All five demo scenarios are repeatable from a clean fixture reset.
+All five demo scenarios are repeatable from a clean provider test setup.
 
 ---
 
@@ -3615,7 +3593,7 @@ B8 admin tenant mapping
 ```text
 C1 connector Protocol
 C2 typed connector errors
-C3 fixtures
+C3 provider test doubles
 C4 Confluence connector
 C5 Jira connector
 C6 Slack connector

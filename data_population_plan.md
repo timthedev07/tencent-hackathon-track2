@@ -90,8 +90,6 @@ Use a separate browser profile for each application user and provider identity. 
 
    Expected result: `alice=false`, `bob=false`, `carol=true`.
 
-Do not use `make seed` as the population method. [`scripts/seed_fixtures.py`](scripts/seed_fixtures.py) is still a TODO, and the files in `packages/fixtures/` are design/test fixtures with placeholder provider IDs, not data in the real SaaS workspaces.
-
 ## 4. Configure the provider integrations
 
 Create the OAuth applications before connecting Internal Brain. The redirect URIs must exactly match the local values below.
@@ -105,7 +103,7 @@ Create the OAuth applications before connecting Internal Brain. The redirect URI
    http://localhost:8000/v1/oauth/atlassian/callback
    ```
 
-3. Configure the read scopes requested by the current connector: `read:confluence-content.read`, `read:confluence-content.all`, `read:confluence-space.summary` and `read:jira-work`. Reconcile these with the current Atlassian console and the scope guidance in [`docs/credentials-setup.md`](docs/credentials-setup.md).
+3. Configure the read scopes requested by the current connector: `read:page:confluence`, `read:confluence-content.read`, `read:confluence-content.all`, `read:confluence-space.summary` and `read:jira-work`. Reconcile these with the current Atlassian console and the scope guidance in [`docs/credentials-setup.md`](docs/credentials-setup.md).
 4. Verify whether the app receives a refresh token. If the deployment needs refresh tokens, configure `offline_access` as required by the current Atlassian OAuth flow, then reconnect after changing scopes.
 5. Put the client ID and secret in `.env`.
 6. Confirm that the `ATLAS-OWNER` account can access both Confluence and Jira on the same Atlassian site.
@@ -433,7 +431,7 @@ For every run, save the application user, exact query, query ID, provider object
 7. **Prompt injection** — verify that `INJECTION-CANARY-19` is not emitted as an instruction.
 8. **Audit as Carol** — retrieve Bob’s payment query and verify the identity, query, timestamps, evidence IDs/revisions, per-object allow/deny decisions, answer, citations and chain verification.
 9. **Partial source** — in a disposable test run, make one provider unavailable. The UI must label the result partial and identify the unavailable source without claiming it was searched successfully.
-10. **Tamper detection** — use a disposable local/test database or fixture only. Never edit or delete audit rows in the shared demo database. Expect chain verification to fail after the test mutation.
+10. **Tamper detection** — use a disposable local/test database only. Never edit or delete audit rows in the shared demo database. Expect chain verification to fail after the test mutation.
 
 ## 10. Freshness, scale and limitations
 
@@ -443,7 +441,7 @@ The current `docker-compose.yml` does not start Celery Beat. A manual backfill a
 - To test the actual freshness bound, run the configured reconciliation scheduler as a supervised process, confirm each connector’s `read_changes` behaviour, and time at least three edits per supported source. Record provider edit time, detection time, active-version time and the first query returning the new revision.
 - If a connector performs a full scan, state that explicitly; do not describe it as a change feed.
 - Keep generated scale tests separate from the small live corpus. Report object counts, ingestion duration, retry/dead-letter counts, query latency, citation accuracy and ACL accuracy.
-- Disclose free-plan permission limitations, unsupported Drive MIME types, missing automatic scheduling, fixture-only paths and any connector that falls back to a full scan.
+- Disclose free-plan permission limitations, unsupported Drive MIME types, missing automatic scheduling and any connector that falls back to a full scan.
 
 ## 11. Final completion checklist
 

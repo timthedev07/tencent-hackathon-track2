@@ -167,14 +167,13 @@ AUTH_INVALID_TOKEN, AUTH_TENANT_NOT_RESOLVED, SOURCE_IDENTITY_MISSING, SOURCE_CR
 - Connection settings page
 - Compliance audit viewer (restricted role)
 
-### Phase 7 — Tests & Fixtures (after all code)
-- Synthetic fixtures (tenant A, alice/bob/compliance user, all source objects with scripted permission changes)
+### Phase 7 — Tests & Provider Integrations (after all code)
+- Provider contract tests with isolated test doubles and permission-change scenarios
 - Security invariant suite (SEC-001 through SEC-010)
 - Connector contract suite (16 cases × 4 connectors)
 - Golden retrieval set (recall@50, recall@30, recall@10, MRR, citation precision)
-- Playwright 5 demo scenarios (automated, deterministic fixtures)
+- Playwright 5 demo scenarios against configured provider test workspaces
 - Failure injection harness (9 failure modes)
-- Reset/demo scripts
 
 ### Phase 8 — Integration Audit
 - All imports resolve

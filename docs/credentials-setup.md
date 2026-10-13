@@ -105,7 +105,7 @@ The spec calls for enterprise OIDC. For local development, use **Keycloak** in D
    - `OIDC_AUDIENCE` = `ai-assistant` (the client ID)
    - `OIDC_JWKS_URL` = `http://localhost:8080/realms/enterprise/protocol/openid-connect/certs`
 
-6. Create test users (e.g., `alice`, `bob`, `carol`) with passwords. The `oidc_subject` in the seed dataset must match the `sub` claim in each user's JWT. Note each user's `sub` UUID from the Keycloak admin console and update `users[].oidc_subject` in `packages/fixtures/seed_dataset.json` accordingly.
+6. Create test users (e.g., `alice`, `bob`, `carol`) with passwords. Use each user's `sub` claim as the persisted `oidc_subject` when that user first connects a provider.
 
 ### Production
 
@@ -156,6 +156,7 @@ Under the **Permissions** tab, enable these scopes:
 **Confluence (read access):**
 | Scope | Description |
 |---|---|
+| `read:page:confluence` | Read Confluence pages through the v2 API |
 | `read:confluence-content.all` | Read all Confluence content (pages, blog posts) |
 | `read:confluence-space.summary` | Read space details |
 | `search:confluence` | Search Confluence content |
@@ -513,18 +514,13 @@ Adjust based on your provider latency and freshness requirements. The spec targe
    uv run alembic upgrade head
    ```
 
-6. Seed fixtures:
-   ```bash
-   uv run python scripts/seed_fixtures.py
-   ```
-
-7. Start the API and worker:
+6. Start the API and worker:
    ```bash
    uv run uvicorn services.api.src.app.main:app --reload --port 8000
-   uv run celery -A worker.celery_app worker --loglevel=info
+   make worker
    ```
 
-8. Start the frontend:
+7. Start the frontend:
    ```bash
    cd apps/web && npm install && npm run dev
    ```

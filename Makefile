@@ -1,7 +1,12 @@
 .PHONY: install dev worker lint typecheck test test-integration test-security \
-       format migrate seed reset openapi frontend-install frontend-dev \
+       format format-check migrate openapi frontend-install frontend-dev \
+       frontend-format frontend-format-check \
        frontend-build frontend-lint frontend-test e2e docker-up docker-down \
        clean
+
+CELERY_POOL ?= $(if $(filter Darwin,$(shell uname -s)),solo,prefork)
+CELERY_CONCURRENCY ?= $(if $(filter solo,$(CELERY_POOL)),1,2)
+PRETTIER_TARGETS := '**/*.{js,jsx,ts,tsx,mjs,mts,cjs,cts,json,css,scss,yml,yaml}'
 
 # ── Python ──────────────────────────────────────────────────────────
 install:
@@ -11,7 +16,7 @@ dev:
 	uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 worker:
-	uv run celery -A worker.celery_app worker --loglevel=info --concurrency=2
+	uv run celery -A worker.celery_app worker --loglevel=info --pool=$(CELERY_POOL) --concurrency=$(CELERY_CONCURRENCY)
 
 lint:
 	uv run ruff check .
@@ -19,9 +24,17 @@ lint:
 format:
 	uv run ruff format .
 	uv run ruff check --fix .
+	$(MAKE) frontend-format
 
 format-check:
 	uv run ruff format --check .
+	$(MAKE) frontend-format-check
+
+frontend-format:
+	apps/web/node_modules/.bin/prettier --ignore-path .prettierignore --write $(PRETTIER_TARGETS)
+
+frontend-format-check:
+	apps/web/node_modules/.bin/prettier --ignore-path .prettierignore --check $(PRETTIER_TARGETS)
 
 typecheck:
 	uv run pyright
@@ -41,12 +54,6 @@ migrate:
 
 migrate-new:
 	uv run alembic revision --autogenerate -m "$(MSG)"
-
-seed:
-	uv run python scripts/seed_fixtures.py
-
-reset:
-	uv run python scripts/reset_demo.py
 
 # ── OpenAPI / Frontend contracts ────────────────────────────────────
 openapi:

@@ -20,15 +20,12 @@ docker compose up -d postgres redis minio
 # 3. Run database migrations
 make migrate
 
-# 4. Seed synthetic fixtures (optional, for demo)
-make seed
-
-# 5. Start the API and worker
+# 4. Start the API and worker
 make dev          # API on :8000
 make frontend-dev # Web on :3000
 
 # 6. Run Celery worker (separate terminal)
-uv run celery -A worker.celery_app worker --loglevel=info
+make worker
 ```
 
 ## Development Commands
@@ -40,13 +37,12 @@ uv run celery -A worker.celery_app worker --loglevel=info
 | `make dev` | Start FastAPI dev server |
 | `make frontend-dev` | Start Next.js dev server |
 | `make lint` | Lint backend (ruff) |
-| `make format` | Format backend (ruff) |
+| `make format` | Format Python with Ruff and supported source files with Prettier |
+| `make format-check` | Check Python and supported source-file formatting without changing files |
 | `make typecheck` | Type-check backend (pyright strict) |
 | `make test` | Run backend unit tests |
 | `make test-security` | Run security invariant tests (SEC-001–010) |
 | `make migrate` | Run Alembic migrations |
-| `make seed` | Seed synthetic fixtures |
-| `make reset` | Reset demo environment |
 | `make openapi` | Regenerate OpenAPI + TS client |
 | `make e2e` | Run Playwright end-to-end tests |
 | `make ci` | Run full CI pipeline locally |
