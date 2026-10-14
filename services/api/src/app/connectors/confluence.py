@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
+from typing import cast
+from uuid import UUID
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.errors import ForbiddenError, NotFoundError
@@ -196,7 +198,7 @@ async def complete_atlassian_oauth(code: str, state: str, user: AuthenticatedUse
             credential = EncryptedCredential(
                 tenant_id=user.tenant_id,
                 user_id=user.user_id,
-                source_connection_id=connection.id,
+                source_connection_id=UUID(str(connection.id)),
                 credential_type=(
                     CredentialType.OAUTH_REFRESH.value
                     if refresh_token
@@ -212,7 +214,7 @@ async def complete_atlassian_oauth(code: str, state: str, user: AuthenticatedUse
                 session,
                 tenant_id=user.tenant_id,
                 user_id=user.user_id,
-                source_connection_id=connection.id,
+                source_connection_id=UUID(str(connection.id)),
                 provider_subject_id=provider_subject,
                 provider_account_type="atlassian",
             )
@@ -282,11 +284,11 @@ class ConfluenceConnector:
             params={"body-format": "storage"},
         )
         payload = json_body(response)
-        version = payload.get("version") if isinstance(payload.get("version"), dict) else {}
-        body = payload.get("body") if isinstance(payload.get("body"), dict) else {}
-        storage = body.get("storage") if isinstance(body.get("storage"), dict) else {}
+        version = _object_dict(payload.get("version"))
+        body = _object_dict(payload.get("body"))
+        storage = _object_dict(body.get("storage"))
         content = strip_html(str(storage.get("value") or ""))
-        links = payload.get("_links") if isinstance(payload.get("_links"), dict) else {}
+        links = _object_dict(payload.get("_links"))
         canonical_url = links.get("webui")
         if canonical_url and links.get("base"):
             canonical_url = f"{links['base']}{canonical_url}"
@@ -300,7 +302,7 @@ class ConfluenceConnector:
             canonical_url=str(canonical_url) if canonical_url else None,
             title=str(payload.get("title")) if payload.get("title") else None,
             content=content,
-            last_modified_at=version.get("createdAt"),
+            last_modified_at=_parse_datetime(version.get("createdAt")),
             provider_metadata={
                 "space_id": payload.get("spaceId"),
                 "ancestor_ids": _ancestor_ids(payload.get("ancestors")),
@@ -440,8 +442,8 @@ def _page_url(cloud_id: str, cursor: str | None) -> str:
 
 
 def _scan_object(item: dict[str, object]) -> dict[str, object]:
-    version = item.get("version") if isinstance(item.get("version"), dict) else {}
-    links = item.get("_links") if isinstance(item.get("_links"), dict) else {}
+    version = _object_dict(item.get("version"))
+    links = _object_dict(item.get("_links"))
     canonical_url = links.get("webui")
     if canonical_url and links.get("base"):
         canonical_url = f"{links['base']}{canonical_url}"
@@ -459,6 +461,19 @@ def _scan_object(item: dict[str, object]) -> dict[str, object]:
             "ancestor_ids": _ancestor_ids(item.get("ancestors")),
         },
     }
+
+
+def _object_dict(value: object) -> dict[str, object]:
+    return cast(dict[str, object], value) if isinstance(value, dict) else {}
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _ancestor_ids(value: object) -> list[str]:

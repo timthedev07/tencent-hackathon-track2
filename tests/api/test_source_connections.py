@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from app.auth.oidc import AuthenticatedUser
@@ -25,8 +25,8 @@ class _Session:
 
     async def flush(self) -> None:
         for value in self.added:
-            if isinstance(value, BackfillRun) and value.id is None:
-                value.id = uuid4()
+            if isinstance(value, BackfillRun):
+                cast(Any, value).id = str(uuid4())
 
     async def commit(self) -> None:
         self.commits += 1
@@ -61,10 +61,12 @@ async def test_sync_publishes_exact_user_connection_and_progress_run() -> None:
     published: list[tuple[str, str, str, str]] = []
 
     result = await queue_connection_sync(
-        session,
+        cast(Any, session),
         user,
         UUID(str(connection.id)),
-        lambda *args: published.append(args),
+        lambda connection_id, tenant_id, user_id, run_id: published.append(
+            (connection_id, tenant_id, user_id, run_id)
+        ),
     )
 
     run = session.added[0]

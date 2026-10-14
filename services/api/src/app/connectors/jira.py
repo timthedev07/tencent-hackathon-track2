@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from http import HTTPStatus
+from typing import cast
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.http import json_body, request
@@ -103,10 +104,11 @@ class JiraConnector:
             },
         )
         payload = json_body(response)
-        fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
-        comments = fields.get("comment") if isinstance(fields.get("comment"), dict) else {}
+        fields = _object_dict(payload.get("fields"))
+        comments = _object_dict(fields.get("comment"))
         comment_text = []
-        for comment in comments.get("comments", []):
+        raw_comments = comments.get("comments")
+        for comment in raw_comments if isinstance(raw_comments, list) else []:
             if isinstance(comment, dict):
                 comment_text.append(flatten_adf(comment.get("body")))
         description = flatten_adf(fields.get("description"))
@@ -114,11 +116,7 @@ class JiraConnector:
             "\n\n".join(part for part in [description, *comment_text] if part)
         )
         issue_links = payload.get("self")
-        web_link = (
-            payload.get("_links", {}).get("web")
-            if isinstance(payload.get("_links"), dict)
-            else None
-        )
+        web_link = _object_dict(payload.get("_links")).get("web")
         updated = fields.get("updated")
         return FetchObjectResult(
             outcome=ConnectorOutcome.SUCCESS,
@@ -225,7 +223,7 @@ def _api_url(
 
 
 def _scan_object(item: dict[str, object]) -> dict[str, object]:
-    fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
+    fields = _object_dict(item.get("fields"))
     return {
         "external_object_id": str(item.get("key") or item.get("id")),
         "object_type": "issue",
@@ -242,6 +240,10 @@ def _parent_id(value: object) -> str | None:
 
 def _project_key(value: object) -> str | None:
     return str(value.get("key")) if isinstance(value, dict) and value.get("key") else None
+
+
+def _object_dict(value: object) -> dict[str, object]:
+    return cast(dict[str, object], value) if isinstance(value, dict) else {}
 
 
 def _web_url(item: dict[str, object]) -> str | None:

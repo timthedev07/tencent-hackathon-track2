@@ -6,7 +6,7 @@ import respx
 from app.connectors import confluence
 from app.connectors.confluence import _ATLASSIAN_OAUTH_SCOPES, get_atlassian_accessible_resources
 from app.connectors.http import request
-from app.domain.types import AccessOutcome, DelegatedCredential
+from app.domain.types import AccessOutcome, DelegatedCredential, Source
 
 _RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 
@@ -55,7 +55,7 @@ async def test_confluence_access_check_uses_valid_page_parameters() -> None:
         "https://api.atlassian.com/ex/confluence/cloud-123/wiki/api/v2/pages/1015989"
     ).mock(return_value=httpx.Response(200, json={"id": "1015989"}))
     credential = DelegatedCredential(
-        source="confluence",
+        source=Source.CONFLUENCE,
         access_token="access-token",
         provider_metadata={"cloud_id": "cloud-123"},
     )

@@ -326,7 +326,10 @@ def _provider_json_schema(output_schema: type) -> dict[str, Any]:  # type: ignor
     """Use a provider-specific schema when the output model supplies one."""
     schema_factory = getattr(output_schema, "openai_json_schema", None)
     if callable(schema_factory):
-        return schema_factory()
+        schema = schema_factory()
+        if isinstance(schema, dict):
+            return schema
+        raise TypeError("Provider schema factory must return a dictionary")
     return output_schema.model_json_schema()
 
 

@@ -20,8 +20,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from app.api.dependencies.auth import get_compliance_user
-from app.auth.oidc import AuthenticatedUser
 from app.auth.credentials import EncryptedPayload, get_credential_manager
+from app.auth.oidc import AuthenticatedUser
 from app.persistence.models import AuditEvent, EvidenceItem, QueryRun, User
 from app.persistence.session import get_session_factory, set_tenant_context
 

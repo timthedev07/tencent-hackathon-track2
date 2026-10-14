@@ -17,6 +17,7 @@ Runtime:
 from __future__ import annotations
 
 import base64
+import binascii
 import os
 import secrets
 
@@ -31,6 +32,7 @@ logger = get_logger(__name__)
 # Key version tracking for rotation
 CURRENT_KEY_VERSION = "v1"
 _EXPECTED_PAYLOAD_PARTS = 3  # wrapped_dek || nonce || ciphertext
+_KEY_SIZE_BYTES = 32
 
 
 class EncryptedPayload(BaseModel):
@@ -60,21 +62,26 @@ class CredentialManager:
             # using SHA-256, then encode as URL-safe base64.
             try:
                 key_bytes = base64.urlsafe_b64decode(key)
-                if len(key_bytes) != 32:
-                    raise ValueError
-                fernet_key = key.encode("utf-8")
-            except (ValueError, base64.binascii.Error):
+            except (ValueError, binascii.Error):
                 import hashlib
 
                 derived = hashlib.sha256(key.encode("utf-8")).digest()
                 fernet_key = base64.urlsafe_b64encode(derived)
+            else:
+                if len(key_bytes) == _KEY_SIZE_BYTES:
+                    fernet_key = key.encode("utf-8")
+                else:
+                    import hashlib
+
+                    derived = hashlib.sha256(key.encode("utf-8")).digest()
+                    fernet_key = base64.urlsafe_b64encode(derived)
             self._fernet = Fernet(fernet_key)
         return self._fernet
 
     def encrypt(self, plaintext: str) -> EncryptedPayload:
         """Encrypt a credential string using envelope encryption."""
         # Generate a random DEK
-        dek = secrets.token_bytes(32)  # 256-bit data encryption key
+        dek = secrets.token_bytes(_KEY_SIZE_BYTES)  # 256-bit data encryption key
 
         # Encrypt the plaintext with the DEK using AES-256-GCM
         nonce = os.urandom(12)  # 96-bit nonce for GCM

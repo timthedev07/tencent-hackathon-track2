@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
+import pytest
 from app.domain.types import GeneratedAnswer
 from app.models import gateway
 from app.models.output_schemas import GeneratedAnswer as OutputGeneratedAnswer
@@ -71,7 +72,7 @@ def test_model_text_removes_control_and_invisible_characters() -> None:
 
 
 def test_http_gateway_reports_configured_execution_versions(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         gateway,
@@ -89,7 +90,9 @@ def test_http_gateway_reports_configured_execution_versions(
     assert model_gateway.embedding_model_version == "configured-embedding"
 
 
-def test_http_gateway_enforces_a_sensible_generation_timeout(monkeypatch) -> None:
+def test_http_gateway_enforces_a_sensible_generation_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         gateway,
         "get_settings",
@@ -101,7 +104,9 @@ def test_http_gateway_enforces_a_sensible_generation_timeout(monkeypatch) -> Non
     assert model_gateway.generation_timeout_seconds == 30.0
 
 
-async def test_audit_commit_stores_supplied_gateway_versions(monkeypatch) -> None:
+async def test_audit_commit_stores_supplied_gateway_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     now = datetime.now(UTC)
     run = QueryRun(
         id=uuid4(),

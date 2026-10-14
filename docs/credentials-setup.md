@@ -15,6 +15,7 @@ For the minimum hosted demo, obtain or configure:
 | GitHub Actions environment `demo` | `RENDER_API_KEY` | Yes | Allows CI to trigger Render deployments. |
 | GitHub Actions environment `demo` | `RENDER_API_SERVICE_ID` | No | Identifies the FastAPI service. |
 | GitHub Actions environment `demo` | `RENDER_WEB_SERVICE_ID` | No | Identifies the Next.js service. |
+| GitHub Actions environment `demo` | `RENDER_WORKSPACE_ID` | No | Tells Render which workspace to validate the Blueprint against. |
 | GitHub Actions environment `demo` | `DEMO_API_URL` | No | API URL used by the smoke test. |
 | GitHub Actions environment `demo` | `DEMO_WEB_URL` | No | Web URL used by the smoke test. |
 | Render API service | `MODEL_API_KEY` | Yes | Lets the model gateway generate and embed answers. |
@@ -31,6 +32,7 @@ PostgreSQL and Redis connection strings, the encryption key, and the audit signi
 | Hosted web API URL | Render Dashboard → `relay-demo-web` → **Environment** → `NEXT_PUBLIC_API_URL`. |
 | Deployment credential | GitHub repository → **Settings → Environments → demo** → **Environment secrets** → `RENDER_API_KEY`. |
 | Render service IDs | GitHub repository → **Settings → Environments → demo** → **Environment secrets** → `RENDER_API_SERVICE_ID` and `RENDER_WEB_SERVICE_ID`. |
+| Render workspace ID | GitHub repository → **Settings → Environments → demo** → **Environment variables** → `RENDER_WORKSPACE_ID`. |
 | Smoke-test URLs | GitHub repository → **Settings → Environments → demo** → **Environment variables** → `DEMO_API_URL` and `DEMO_WEB_URL`. |
 
 For hosted deployment, do not put application credentials in GitHub Actions. GitHub only needs the Render deployment key and identifiers; the API reads runtime credentials from Render.
@@ -69,6 +71,12 @@ After the Blueprint creates the services:
 
 The service IDs are identifiers rather than passwords, but keep them in the protected `demo` environment because the workflow reads them alongside the API key.
 
+Also obtain the Render workspace ID used by the Blueprint:
+
+1. Authenticate the Render CLI locally with `render login`, or use the Render account that owns the Blueprint.
+2. Run `render workspaces -o json` and copy the workspace `id` for the workspace containing `relay-demo-api`.
+3. Save it as the GitHub environment variable `RENDER_WORKSPACE_ID` in the next step. It is an identifier, not a secret.
+
 ### 4. Configure GitHub Actions
 
 Create a GitHub environment named `demo`:
@@ -88,6 +96,7 @@ Add the following under **Environment variables**:
 
 1. `DEMO_API_URL` — the public API URL, without a trailing slash.
 2. `DEMO_WEB_URL` — the public web URL, without a trailing slash.
+3. `RENDER_WORKSPACE_ID` — the Render workspace ID from step 3.
 
 GitHub's automatically provided `GITHUB_TOKEN` is sufficient for checkout. No GitHub personal access token is needed. See [GitHub Actions secrets](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions) and [GitHub Actions variables](https://docs.github.com/en/actions/learn-github-actions/variables).
 

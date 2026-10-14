@@ -27,10 +27,7 @@ async def start_backfill_run(tenant_id: str, run_id: str | None) -> bool:
             if run is None or run.status not in {"scanning", "processing"}:
                 return False
             last_activity = run.updated_at or run.started_at
-            if (
-                last_activity is None
-                or datetime.now(UTC) - last_activity <= _BACKFILL_LEASE_TIMEOUT
-            ):
+            if datetime.now(UTC) - last_activity <= _BACKFILL_LEASE_TIMEOUT:
                 return False
             run.error_message = None
             run.completed_at = None

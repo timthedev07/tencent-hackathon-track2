@@ -88,6 +88,7 @@ Set these GitHub Actions variables:
 
 - `DEMO_API_URL` — for example, `https://relay-demo-api.onrender.com`.
 - `DEMO_WEB_URL` — for example, `https://relay-demo-web.onrender.com`.
+- `RENDER_WORKSPACE_ID` — the Render workspace ID used by the Blueprint validator.
 
 Set these Render environment values during Blueprint creation:
 

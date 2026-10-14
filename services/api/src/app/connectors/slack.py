@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.errors import ConnectorError, ForbiddenError, PermanentError, RateLimitedError
@@ -152,7 +153,7 @@ async def complete_slack_oauth(code: str, state: str, user: AuthenticatedUser) -
         credential = EncryptedCredential(
             tenant_id=user.tenant_id,
             user_id=user.user_id,
-            source_connection_id=connection.id,
+            source_connection_id=UUID(str(connection.id)),
             credential_type=CredentialType.OAUTH_ACCESS.value,
             ciphertext=payload.ciphertext,
             key_version=payload.key_version,
@@ -164,7 +165,7 @@ async def complete_slack_oauth(code: str, state: str, user: AuthenticatedUser) -
             session,
             tenant_id=user.tenant_id,
             user_id=user.user_id,
-            source_connection_id=connection.id,
+            source_connection_id=UUID(str(connection.id)),
             provider_subject_id=provider_subject,
             provider_account_type="slack",
         )

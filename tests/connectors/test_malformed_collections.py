@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
+from typing import cast
 from uuid import UUID
 
 import httpx
@@ -214,7 +215,7 @@ async def test_drive_scan_is_limited_to_scoped_folders(
     captured: list[dict[str, object]] = []
 
     async def fake_request(*args: object, **kwargs: object) -> httpx.Response:
-        captured.append(kwargs["params"])
+        captured.append(cast(dict[str, object], kwargs["params"]))
         return httpx.Response(
             HTTPStatus.OK,
             json={
@@ -253,9 +254,10 @@ async def test_drive_scan_discovers_nested_folder_contents(
     requests: list[str] = []
 
     async def fake_request(*args: object, **kwargs: object) -> httpx.Response:
-        query = kwargs["params"]["q"]
+        params = cast(dict[str, object], kwargs["params"])
+        query = params["q"]
         requests.append(str(query))
-        if query.startswith("'root-folder'"):
+        if str(query).startswith("'root-folder'"):
             return httpx.Response(
                 HTTPStatus.OK,
                 json={

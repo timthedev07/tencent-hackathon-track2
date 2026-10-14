@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from uuid import UUID
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.errors import ConnectorError, PermanentError
@@ -173,7 +174,7 @@ async def complete_google_oauth(code: str, state: str, user: AuthenticatedUser) 
         credential = EncryptedCredential(
             tenant_id=user.tenant_id,
             user_id=user.user_id,
-            source_connection_id=connection.id,
+            source_connection_id=UUID(str(connection.id)),
             credential_type=CredentialType.OAUTH_REFRESH.value,
             ciphertext=payload.ciphertext,
             key_version=payload.key_version,
@@ -186,7 +187,7 @@ async def complete_google_oauth(code: str, state: str, user: AuthenticatedUser) 
             session,
             tenant_id=user.tenant_id,
             user_id=user.user_id,
-            source_connection_id=connection.id,
+            source_connection_id=UUID(str(connection.id)),
             provider_subject_id=provider_subject,
             provider_account_type="google",
         )

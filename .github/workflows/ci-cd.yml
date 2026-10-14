@@ -23,14 +23,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Render CLI
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/render-oss/cli/main/bin/install.sh | sh
-          echo "$HOME/.render/bin" >> "$GITHUB_PATH"
-
-      - name: Validate Render Blueprint
-        run: render blueprints validate render.yaml --output text --confirm
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -80,6 +72,20 @@ jobs:
     runs-on: ubuntu-latest
     environment: demo
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Render CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/render-oss/cli/main/bin/install.sh | sh
+          echo "$HOME/.render/bin" >> "$GITHUB_PATH"
+
+      - name: Validate Render Blueprint
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_WORKSPACE_ID: ${{ vars.RENDER_WORKSPACE_ID }}
+        run: render blueprints validate render.yaml --workspace "${RENDER_WORKSPACE_ID}" --output text --confirm
+
       - name: Trigger API and web deployments
         id: trigger
         env:

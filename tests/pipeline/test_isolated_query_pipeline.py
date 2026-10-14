@@ -347,14 +347,20 @@ def _acl_payloads() -> dict[str, dict[str, Any]]:
             "operation": "read",
             "restrictions": {
                 "user": {"results": [], "size": 0},
-                "group": {"results": [{"type": "group", "id": "eng-team", "name": "eng-team"}], "size": 1},
+                "group": {
+                    "results": [{"type": "group", "id": "eng-team", "name": "eng-team"}],
+                    "size": 1,
+                },
             },
         },
         "confluence_public_page_v2": {
             "operation": "read",
             "restrictions": {
                 "user": {"results": [], "size": 0},
-                "group": {"results": [{"type": "group", "id": "eng-team", "name": "eng-team"}], "size": 1},
+                "group": {
+                    "results": [{"type": "group", "id": "eng-team", "name": "eng-team"}],
+                    "size": 1,
+                },
             },
         },
         "confluence_restricted_page": {
@@ -362,7 +368,9 @@ def _acl_payloads() -> dict[str, dict[str, Any]]:
             "restrictions": {
                 "user": {"results": [], "size": 0},
                 "group": {
-                    "results": [{"type": "group", "id": "exec-leadership", "name": "exec-leadership"}],
+                    "results": [
+                        {"type": "group", "id": "exec-leadership", "name": "exec-leadership"}
+                    ],
                     "size": 1,
                 },
             },
@@ -438,7 +446,9 @@ def _flatten_adf(node: Any) -> list[str]:
     return []
 
 
-def _normalise_provider_payload(source: Source, payload: dict[str, Any]) -> NormalisedProviderObject:
+def _normalise_provider_payload(
+    source: Source, payload: dict[str, Any]
+) -> NormalisedProviderObject:
     if source == Source.CONFLUENCE:
         base = payload["_links"]["base"]
         webui = payload["_links"]["webui"]
@@ -451,12 +461,20 @@ def _normalise_provider_payload(source: Source, payload: dict[str, Any]) -> Norm
             title=payload["title"],
             source_revision=payload["version"]["createdAt"],
             text=_strip_html(payload["body"]["storage"]["value"]),
-            provider_metadata={"spaceId": payload["spaceId"], "versionNumber": payload["version"]["number"]},
+            provider_metadata={
+                "spaceId": payload["spaceId"],
+                "versionNumber": payload["version"]["number"],
+            },
         )
     if source == Source.JIRA:
         fields = payload["fields"]
-        comments = [" ".join(_flatten_adf(comment["body"])) for comment in fields["comment"]["comments"]]
-        text = "\n".join([fields["summary"], " ".join(_flatten_adf(fields["description"])), *comments])
+        comments = [
+            " ".join(_flatten_adf(comment["body"]))
+            for comment in fields["comment"]["comments"]
+        ]
+        text = "\n".join(
+            [fields["summary"], " ".join(_flatten_adf(fields["description"])), *comments]
+        )
         return NormalisedProviderObject(
             source=source,
             external_object_id=payload["key"],
@@ -496,7 +514,10 @@ def _normalise_provider_payload(source: Source, payload: dict[str, Any]) -> Norm
         title=file_payload["name"],
         source_revision=file_payload["headRevisionId"],
         text=payload["exportedText"],
-        provider_metadata={"mimeType": file_payload["mimeType"], "modifiedTime": file_payload["modifiedTime"]},
+        provider_metadata={
+            "mimeType": file_payload["mimeType"],
+            "modifiedTime": file_payload["modifiedTime"],
+        },
     )
 
 
@@ -504,7 +525,10 @@ def _provider_documents(use_updated_confluence: bool = False) -> list[ProviderDo
     payloads = _provider_payloads()
     acls = _acl_payloads()
     keys_and_sources = [
-        ("confluence_public_page_v2" if use_updated_confluence else "confluence_public_page", Source.CONFLUENCE),
+        (
+            "confluence_public_page_v2" if use_updated_confluence else "confluence_public_page",
+            Source.CONFLUENCE,
+        ),
         ("confluence_restricted_page", Source.CONFLUENCE),
         ("jira_shared_issue", Source.JIRA),
         ("slack_public_thread", Source.SLACK),
@@ -643,7 +667,9 @@ class InMemoryPipelineHarness:
         trace.statuses.append("candidates")
 
         local_verdicts = self._local_acl_projection(user_id, candidates)
-        trace.local_acl_results = {obj_id: verdict.outcome for obj_id, verdict in local_verdicts.items()}
+        trace.local_acl_results = {
+            obj_id: verdict.outcome for obj_id, verdict in local_verdicts.items()
+        }
         candidates_after_local = [
             candidate
             for candidate in candidates
@@ -659,10 +685,14 @@ class InMemoryPipelineHarness:
             doc = self.by_object_id[object_id]
             trace.live_checked_object_ids.append(object_id)
             access_results[object_id] = self._live_reauthorise(user_id, doc)
-        trace.live_access_results = {obj_id: result.outcome for obj_id, result in access_results.items()}
+        trace.live_access_results = {
+            obj_id: result.outcome for obj_id, result in access_results.items()
+        }
 
         authorised_ids = {
-            object_id for object_id, result in access_results.items() if result.outcome == AccessOutcome.ALLOW
+            object_id
+            for object_id, result in access_results.items()
+            if result.outcome == AccessOutcome.ALLOW
         }
         partial_sources = sorted(
             {
@@ -772,7 +802,9 @@ class InMemoryPipelineHarness:
         ]
         return vector_hits, lexical_hits
 
-    def _local_acl_projection(self, user_id: UUID, candidates: list[Any]) -> dict[UUID, AccessCheckResult]:
+    def _local_acl_projection(
+        self, user_id: UUID, candidates: list[Any]
+    ) -> dict[UUID, AccessCheckResult]:
         seen: set[UUID] = set()
         verdicts: dict[UUID, AccessCheckResult] = {}
         for candidate in candidates:
@@ -780,7 +812,9 @@ class InMemoryPipelineHarness:
                 continue
             seen.add(candidate.source_object_id)
             doc = self.by_object_id[candidate.source_object_id]
-            verdicts[candidate.source_object_id] = self._provider_acl_result(user_id, doc, local=True)
+            verdicts[candidate.source_object_id] = self._provider_acl_result(
+                user_id, doc, local=True
+            )
         return verdicts
 
     def _live_reauthorise(self, user_id: UUID, doc: ProviderDocument) -> AccessCheckResult:
@@ -824,7 +858,11 @@ class InMemoryPipelineHarness:
         acl = doc.acl_payload
         if source == Source.CONFLUENCE:
             restrictions = acl["restrictions"]
-            users = {item["accountId"] for item in restrictions["user"]["results"] if "accountId" in item}
+            users = {
+                item["accountId"]
+                for item in restrictions["user"]["results"]
+                if "accountId" in item
+            }
             groups = {item["id"] for item in restrictions["group"]["results"]}
             return users, groups
         if source == Source.JIRA:
@@ -903,7 +941,8 @@ class InMemoryPipelineHarness:
                 "evidence_count": len(evidence),
                 "evidence_revisions": [ev.source_revision for ev in evidence],
                 "access_decisions": {
-                    str(object_id): result.outcome.value for object_id, result in access_results.items()
+                    str(object_id): result.outcome.value
+                    for object_id, result in access_results.items()
                 },
                 "partial_sources": partial_sources,
             },
@@ -996,11 +1035,15 @@ def test_authorised_cross_source_pipeline_generates_verified_answer_after_audit(
 
     assert result.status == "completed"
     assert result.answer is not None
-    assert result.audit_event_hash is not None and re.fullmatch(r"[0-9a-f]{64}", result.audit_event_hash)
+    assert result.audit_event_hash is not None
+    assert re.fullmatch(r"[0-9a-f]{64}", result.audit_event_hash)
     assert result.trace.statuses[-2:] == ["verified", "completed"]
     assert {ev.source for ev in result.evidence} >= {Source.CONFLUENCE, Source.JIRA}
     assert verify_answer(result.answer, result.evidence).valid
-    assert all(outcome == AccessOutcome.ALLOW for outcome in result.trace.live_access_results.values())
+    assert all(
+        outcome == AccessOutcome.ALLOW
+        for outcome in result.trace.live_access_results.values()
+    )
 
 
 def test_google_drive_outage_answer_preserves_and_cites_impact_chunk() -> None:
@@ -1139,4 +1182,6 @@ def test_verifier_rejects_fabricated_citation_and_extractive_fallback_stays_auth
     assert not verification.valid
     assert "unauthorised_citations" in verification.reason
     assert verify_answer(fallback, evidence).valid
-    assert {claim.evidence_ids[0] for claim in fallback.claims} <= {ev.evidence_id for ev in evidence}
+    assert {claim.evidence_ids[0] for claim in fallback.claims} <= {
+        ev.evidence_id for ev in evidence
+    }
