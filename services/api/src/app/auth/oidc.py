@@ -28,6 +28,12 @@ logger = get_logger(__name__)
 _jwks_cache: dict[str, Any] = {}
 _jwks_last_fetch: float = 0.0
 _JWKS_TTL_SECONDS = 300  # 5 minutes
+_DEV_COMPLIANCE_SUBJECT = "compliance"
+
+
+def _is_dev_compliance_subject(subject: str) -> bool:
+    """Grant the demo compliance role only to the explicit demo subject."""
+    return subject.casefold() == _DEV_COMPLIANCE_SUBJECT
 
 
 class AuthenticatedUser(BaseModel):
@@ -214,7 +220,7 @@ async def resolve_user(session: AsyncSession, claims: dict[str, Any]) -> Authent
             oidc_subject=oidc_subject,
             display_name=f"Dev User ({oidc_subject})",
             email=f"{oidc_subject}@dev.local",
-            is_compliance_user=True,
+            is_compliance_user=_is_dev_compliance_subject(oidc_subject),
         )
         session.add(user)
         await session.commit()
@@ -235,6 +241,13 @@ async def resolve_user(session: AsyncSession, claims: dict[str, Any]) -> Authent
 
     user, tenant = row
     assert tenant is not None
+    if settings.is_development:
+        expected_compliance_role = _is_dev_compliance_subject(oidc_subject)
+        if user.is_compliance_user != expected_compliance_role:
+            # Correct users created by the previous development default while
+            # preserving the explicit ``dev-compliance`` demo role.
+            user.is_compliance_user = expected_compliance_role
+            await session.commit()
     return AuthenticatedUser(
         user_id=UUID(str(user.id)),
         tenant_id=UUID(str(tenant.id)),
