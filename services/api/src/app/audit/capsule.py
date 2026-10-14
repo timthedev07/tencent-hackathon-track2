@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.credentials import EncryptedPayload, get_credential_manager
 from app.observability.logging import get_logger
-from app.persistence.models import AccessDecision, AuditEvent, EvidenceItem, QueryRun
+from app.persistence.models import AccessDecision, AuditEvent, EvidenceItem, QueryRun, SourceObject
 
 logger = get_logger(__name__)
 
@@ -45,17 +45,15 @@ async def build_evidence_capsule(
         .all()
     )
 
-    evidence = (
-        (
-            await session.execute(
-                select(EvidenceItem)
-                .where(EvidenceItem.query_id == query_id)
-                .order_by(EvidenceItem.rank)
-            )
+    evidence_rows = (
+        await session.execute(
+            select(EvidenceItem, SourceObject.external_object_id)
+            .join(SourceObject, EvidenceItem.source_object_id == SourceObject.id)
+            .where(EvidenceItem.query_id == query_id)
+            .order_by(EvidenceItem.rank)
         )
-        .scalars()
-        .all()
-    )
+    ).all()
+    evidence = [item for item, _ in evidence_rows]
 
     audit_event = (
         await session.execute(
@@ -102,12 +100,20 @@ async def build_evidence_capsule(
 
     citations = [
         {
-            "evidenceId": str(e.id),
-            "source": e.source,
-            "label": e.title_snapshot,
-            "url": e.canonical_url,
+            "evidenceId": str(evidence_item.id),
+            "referenceId": (
+                f"evi_{str(evidence_item.model_evidence_id).replace('-', '')[:12]}"
+                if evidence_item.model_evidence_id
+                else None
+            ),
+            "itemKey": (
+                str(external_object_id) if evidence_item.source == "jira" else None
+            ),
+            "source": evidence_item.source,
+            "label": evidence_item.title_snapshot,
+            "url": evidence_item.canonical_url,
         }
-        for e in evidence
+        for evidence_item, external_object_id in evidence_rows
     ]
 
     partial_warnings: list[dict[str, Any]] = []

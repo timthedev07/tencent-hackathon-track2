@@ -38,7 +38,10 @@ function tokenPattern(jiraKeys: Iterable<string>): RegExp {
     .filter(Boolean)
     .sort((left, right) => right.length - left.length)
     .map((key) => `(?<![A-Za-z0-9_-])${escapeForRegex(key)}(?![A-Za-z0-9_-])`)
-  return new RegExp(exactKeys.length ? `${exactKeys.join('|')}|${BASE_TOKEN_SOURCE}` : BASE_TOKEN_SOURCE, 'gi')
+  return new RegExp(
+    exactKeys.length ? `${exactKeys.join('|')}|${BASE_TOKEN_SOURCE}` : BASE_TOKEN_SOURCE,
+    'gi',
+  )
 }
 
 function buildJiraLinkResolver(citations: Citation[]): (key: string) => string | undefined {
@@ -73,14 +76,14 @@ function tokenFor(
 
 function Badge({ token }: { token: AnswerToken }) {
   const shared =
-    'answer-badge inline-flex align-middle items-center justify-start gap-1.5 rounded-full border px-2.5 py-1.5 text-xs font-medium leading-none'
+    'answer-reference inline-flex align-middle items-center justify-start gap-1 border-b-2 px-2 mx-1 py-1 text-xs font-medium leading-none'
   const interactive =
-    'cursor-pointer transition-[transform,background-color,border-color,box-shadow] duration-200 ease-out hover:-translate-y-0.5 hover:scale-[1.02] active:translate-y-0 active:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950'
+    'cursor-pointer transition-[background-image,border-color] duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950'
   if (token.kind === 'evidence' && token.citation) {
     return (
       <Link
         href={`/evidence/${token.citation.evidenceId}`}
-        className={`${shared} ${interactive} border-teal-200/25 bg-teal-300/[.09] text-teal-100 hover:border-teal-100/45 hover:bg-teal-300/[.16] hover:shadow-[0_8px_22px_rgba(45,212,191,0.18)] focus-visible:ring-teal-200/70`}
+        className={`${shared} ${interactive} border-teal-200/35 bg-[linear-gradient(to_top,rgba(45,212,191,0.07),transparent)] text-teal-100 hover:border-teal-100/55 hover:bg-[linear-gradient(to_top,rgba(45,212,191,0.14),transparent)] focus-visible:ring-teal-200/70`}
         title={`Open ${token.citation.label ?? 'evidence'}`}
       >
         <FileSearch size={13} /> Evidence
@@ -98,7 +101,7 @@ function Badge({ token }: { token: AnswerToken }) {
         href={token.href}
         target="_blank"
         rel="noopener noreferrer"
-        className={`${shared} ${interactive} border-sky-200/25 bg-sky-300/[.09] text-sky-100 hover:border-sky-100/45 hover:bg-sky-300/[.16] hover:shadow-[0_8px_22px_rgba(56,189,248,0.18)] focus-visible:ring-sky-200/70`}
+        className={`${shared} ${interactive} border-sky-200/35 bg-[linear-gradient(to_top,rgba(56,189,248,0.07),transparent)] text-sky-100 hover:border-sky-100/55 hover:bg-[linear-gradient(to_top,rgba(56,189,248,0.14),transparent)] focus-visible:ring-sky-200/70`}
       >
         {content}
       </a>
@@ -110,14 +113,16 @@ function Badge({ token }: { token: AnswerToken }) {
         href={token.href}
         target="_blank"
         rel="noopener noreferrer"
-        className={`${shared} ${interactive} border-violet-200/25 bg-violet-300/[.09] text-violet-100 hover:border-violet-100/45 hover:bg-violet-300/[.16] hover:shadow-[0_8px_22px_rgba(167,139,250,0.18)] focus-visible:ring-violet-200/70`}
+        className={`${shared} ${interactive} border-violet-200/35 bg-[linear-gradient(to_top,rgba(167,139,250,0.07),transparent)] text-violet-100 hover:border-violet-100/55 hover:bg-[linear-gradient(to_top,rgba(167,139,250,0.14),transparent)] focus-visible:ring-violet-200/70`}
       >
         <Link2 size={13} /> Link <ExternalLink size={11} />
       </a>
     )
   }
   return (
-    <span className={`${shared} border-amber-200/25 bg-amber-300/[.09] text-amber-100 transition-shadow duration-200 ease-out hover:shadow-[0_0_16px_rgba(251,191,36,0.18)]`}>
+    <span
+      className={`${shared} border-amber-200/35 bg-[linear-gradient(to_top,rgba(251,191,36,0.07),transparent)] text-amber-100 transition-[background-image,border-color] duration-200 ease-out hover:border-amber-100/55 hover:bg-[linear-gradient(to_top,rgba(251,191,36,0.14),transparent)]`}
+    >
       <Clock3 size={13} /> {token.value}
     </span>
   )
@@ -125,10 +130,17 @@ function Badge({ token }: { token: AnswerToken }) {
 
 export function AnswerContent({ answer, citations }: { answer: string; citations: Citation[] }) {
   const evidence = new Map(
-    citations.map((citation) => [citation.referenceId ?? shortEvidenceId(citation.evidenceId), citation]),
+    citations.map((citation) => [
+      citation.referenceId ?? shortEvidenceId(citation.evidenceId),
+      citation,
+    ]),
   )
   const jiraHref = buildJiraLinkResolver(citations)
-  const tokens = tokenPattern(citations.filter((citation) => citation.source === 'jira' && safeExternalUrl(citation.url)).flatMap((citation) => citation.itemKey ? [citation.itemKey] : []))
+  const tokens = tokenPattern(
+    citations
+      .filter((citation) => citation.source === 'jira' && safeExternalUrl(citation.url))
+      .flatMap((citation) => (citation.itemKey ? [citation.itemKey] : [])),
+  )
   const pieces: React.ReactNode[] = []
   let cursor = 0
 
