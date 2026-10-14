@@ -20,7 +20,10 @@ class SseConnectionError extends Error implements SseError {
   }
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+const defaultApiUrl = process.env.NODE_ENV === 'production'
+  ? 'https://relay-demo-api.onrender.com'
+  : 'http://localhost:8000';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || defaultApiUrl;
 const API_PREFIX = '/v1';
 
 export class SseStream {
