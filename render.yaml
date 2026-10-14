@@ -15,9 +15,9 @@ services:
       - key: APP_BASE_URL
         value: https://relay-demo-api.onrender.com
       - key: WEB_BASE_URL
-        sync: false
+        value: https://relay-demo-web.onrender.com
       - key: CORS_ALLOWED_ORIGINS
-        sync: false
+        value: https://relay-demo-web.onrender.com
       - key: DATABASE_URL
         fromDatabase:
           name: relay-demo-db
@@ -45,7 +45,7 @@ services:
     healthCheckPath: /
     envVars:
       - key: NEXT_PUBLIC_API_URL
-        sync: false
+        value: https://relay-demo-api.onrender.com
 
   - type: keyvalue
     name: relay-demo-redis

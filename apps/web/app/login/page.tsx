@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { ArrowRight, Fingerprint, LockKeyhole, ShieldCheck, Sparkles } from 'lucide-react';
 import { GlassPanel } from '@/components/GlassPanel';
 import { ThemeToggle } from '@/components/ThemeToggle';
-import { devLogin, getAuthToken, setAuthToken } from '@/lib/api/client';
+import { API_URL, devLogin, getAuthToken, setAuthToken } from '@/lib/api/client';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -17,7 +17,7 @@ export default function LoginPage() {
   async function handleLogin(event: React.FormEvent) {
     event.preventDefault(); setError(null); setLoading(true);
     try { const { token } = await devLogin(subject.trim() || 'alice'); setAuthToken(token); router.push('/query'); }
-    catch { setError('Sign in failed. Check that the API is running on localhost:8000.'); }
+    catch { setError(`Sign in failed. Check that the API is reachable at ${API_URL}.`); }
     finally { setLoading(false); }
   }
 

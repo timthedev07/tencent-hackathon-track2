@@ -1,6 +1,6 @@
 # Credentials Setup Guide
 
-This document explains how to obtain every credential referenced in `.env.example` for local development and demo deployment. Each section links to the official documentation it was verified against.
+This document explains how to configure the credentials listed in `.env.example` for local development and demo deployment. The required provider values are already available; this guide covers where to place them and how to verify the integrations.
 
 ## Hosted demo: GitHub Actions + Render
 
@@ -8,7 +8,7 @@ This section is the shortest path for the current short-lived demo deployment. T
 
 ### What you need
 
-For the minimum hosted demo, obtain or configure:
+For the hosted demo, configure:
 
 | Where | Name | Secret? | Purpose |
 |---|---|---:|---|
@@ -19,6 +19,13 @@ For the minimum hosted demo, obtain or configure:
 | GitHub Actions environment `demo` | `DEMO_API_URL` | No | API URL used by the smoke test. |
 | GitHub Actions environment `demo` | `DEMO_WEB_URL` | No | Web URL used by the smoke test. |
 | Render API service | `MODEL_API_KEY` | Yes | Lets the model gateway generate and embed answers. |
+
+The hosted demo URLs are fixed as follows:
+
+| Service | URL |
+|---|---|
+| API | `https://relay-demo-api.onrender.com` |
+| Web | `https://relay-demo-web.onrender.com` |
 
 PostgreSQL and Redis connection strings, the encryption key, and the audit signing key are generated or connected by the Render Blueprint. They do not need to be copied into GitHub.
 
@@ -45,19 +52,15 @@ For hosted deployment, do not put application credentials in GitHub Actions. Git
 4. In Render, select **New → Blueprint**, choose this repository and branch, and apply `render.yaml`. See [Render Blueprints](https://render.com/docs/infrastructure-as-code).
 5. When prompted, provide `MODEL_API_KEY`. Leave generated values for `ENCRYPTION_MASTER_KEY` and `AUDIT_CHECKPOINT_SIGNING_KEY` enabled.
 6. Set these values on the API service after the two service URLs are known:
-   - `WEB_BASE_URL` = the web service URL, for example `https://relay-demo-web.onrender.com`.
-   - `CORS_ALLOWED_ORIGINS` = the same web service URL.
-7. Set `NEXT_PUBLIC_API_URL` on the web service to the API service URL, for example `https://relay-demo-api.onrender.com`.
+   - `WEB_BASE_URL=https://relay-demo-web.onrender.com`
+   - `CORS_ALLOWED_ORIGINS=https://relay-demo-web.onrender.com`
+7. Set `NEXT_PUBLIC_API_URL=https://relay-demo-api.onrender.com` on the web service.
 
 The Blueprint sets service auto-deploy to off so GitHub Actions remains the deployment gate. The `sync: false` values are prompted for during initial Blueprint creation; Render documents that new values with `sync: false` must be added manually later if the Blueprint already exists. See [Render environment variables](https://render.com/docs/configure-environment-variables).
 
-### 2. Create the Render API key
+### 2. Configure the Render deployment key
 
-1. Open Render **Account Settings → API Keys**, or follow the [Render API setup guide](https://render.com/docs/api).
-2. Select **Create API key**.
-3. Give it a descriptive name such as `github-actions-demo-deploy`.
-4. Copy the value immediately. Render displays the full key only when it is created.
-5. Treat it as a password. Do not put it in `render.yaml`, `.env.example`, a commit, an issue, or a workflow log.
+Use the existing `RENDER_API_KEY` in the GitHub `demo` environment. Treat it as a password: do not put it in `render.yaml`, `.env.example`, a commit, an issue, or a workflow log.
 
 The workflow sends this key as a Bearer token to Render's [Trigger Deploy endpoint](https://api-docs.render.com/reference/create-deploy).
 
@@ -94,22 +97,15 @@ Add the following under **Environment secrets**:
 
 Add the following under **Environment variables**:
 
-1. `DEMO_API_URL` — the public API URL, without a trailing slash.
-2. `DEMO_WEB_URL` — the public web URL, without a trailing slash.
+1. `DEMO_API_URL=https://relay-demo-api.onrender.com`
+2. `DEMO_WEB_URL=https://relay-demo-web.onrender.com`
 3. `RENDER_WORKSPACE_ID` — the Render workspace ID from step 3.
 
 GitHub's automatically provided `GITHUB_TOKEN` is sufficient for checkout. No GitHub personal access token is needed. See [GitHub Actions secrets](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions) and [GitHub Actions variables](https://docs.github.com/en/actions/learn-github-actions/variables).
 
-### 5. Create the model API key
+### 5. Configure the existing model API key
 
-The current Blueprint uses `MODEL_PROVIDER=openai`.
-
-1. Sign in to the [OpenAI API platform](https://platform.openai.com/).
-2. Create or select a project, then open [API keys](https://platform.openai.com/api-keys).
-3. Select **Create new secret key** and copy it immediately.
-4. Ensure the project has an active payment method or available credit in [Billing](https://platform.openai.com/settings/organization/billing/overview).
-5. In Render, open `relay-demo-api → Environment` and set `MODEL_API_KEY` to the key.
-6. Redeploy the API service, or push a commit after the value is saved.
+The current Blueprint uses `MODEL_PROVIDER=openai`. Use the existing `MODEL_API_KEY` value from `.env` for local development or set the same value in `relay-demo-api → Environment` for the hosted deployment. Redeploy the API service after changing it.
 
 Do not store this runtime key in GitHub unless the workflow itself needs to call the model. The application reads it from Render at runtime. Check [OpenAI model documentation](https://platform.openai.com/docs/models) before changing `GENERATION_MODEL`, `EMBEDDING_MODEL`, or `RERANK_MODEL`.
 
@@ -123,76 +119,37 @@ Do not store this runtime key in GitHub unless the workflow itself needs to call
 
 The demo deliberately uses `APP_ENV=development`, so its built-in sign-in accepts development tokens. Do not expose it to real users or sensitive data.
 
-## Optional source-integration credentials
+## Required source integrations
 
-The following credentials are only needed if the demo connects to those providers. OAuth access and refresh tokens are obtained during the user authorisation flow and are stored by the application; they are not manually placed in `.env`.
+The demo requires all three source integrations: Atlassian (Jira and Confluence), Slack, and Google Drive. Their variables are listed in `.env.example`; use the existing values in `.env`. OAuth access and refresh tokens are obtained during the user authorisation flow and stored encrypted by the application, rather than being placed in `.env`.
 
 ### Atlassian: Jira and Confluence
 
-1. Open the [Atlassian Developer Console](https://developer.atlassian.com/console/myapps/).
-2. Create an **OAuth 2.0 (3LO)** app.
-3. Copy the app's **Client ID** to `ATLASSIAN_CLIENT_ID` and **Client secret** to `ATLASSIAN_CLIENT_SECRET`.
-4. Add this callback URL, replacing `<api-host>` with the deployed API hostname:
-   ```text
-   https://<api-host>/v1/oauth/atlassian/callback
-   ```
-5. In Render Dashboard → `relay-demo-api` → **Environment**, add:
-   ```text
-   ATLASSIAN_CLIENT_ID=<client-id>
-   ATLASSIAN_CLIENT_SECRET=<client-secret>
-   ATLASSIAN_REDIRECT_URI=https://<api-host>/v1/oauth/atlassian/callback
-   ATLASSIAN_WEBHOOK_SECRET=<self-generated-secret-if-used>
-   ```
-6. Add only the read scopes required by the demo, then save and authorise the app.
+Use the existing values for `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET`, and `ATLASSIAN_WEBHOOK_SECRET`. Set `ATLASSIAN_REDIRECT_URI` to the API callback URL:
+```text
+https://relay-demo-api.onrender.com/v1/oauth/atlassian/callback
+```
+Configure the same values in the local `.env` or in Render's `relay-demo-api → Environment`.
 
 Read [Atlassian OAuth 2.0 (3LO) apps](https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/) and [Atlassian OAuth security guidance](https://developer.atlassian.com/cloud/jira/platform/security-for-other-integrations/).
 
 ### Slack
 
-1. Open [Slack API → Your Apps](https://api.slack.com/apps).
-2. Select **Create New App → From scratch**, then choose the workspace.
-3. From **Basic Information**, copy **Client ID**, **Client Secret**, and **Signing Secret** to:
-   - `SLACK_CLIENT_ID`
-   - `SLACK_CLIENT_SECRET`
-   - `SLACK_SIGNING_SECRET`
-4. Under **OAuth & Permissions**, add this redirect URL:
-   ```text
-   https://<api-host>/v1/oauth/slack/callback
-   ```
-5. In Render Dashboard → `relay-demo-api` → **Environment**, add:
-   ```text
-   SLACK_CLIENT_ID=<client-id>
-   SLACK_CLIENT_SECRET=<client-secret>
-   SLACK_SIGNING_SECRET=<signing-secret>
-   SLACK_REDIRECT_URI=https://<api-host>/v1/oauth/slack/callback
-   ```
-6. Add the minimum bot scopes required by the demo and install the app to the workspace.
-7. If event ingestion is enabled, set the request URL to:
-   ```text
-   https://<api-host>/v1/webhooks/slack
-   ```
+Use the existing values for `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `SLACK_SIGNING_SECRET`. Set `SLACK_REDIRECT_URI` to:
+```text
+https://relay-demo-api.onrender.com/v1/oauth/slack/callback
+```
+Configure the same values in the local `.env` or in Render's `relay-demo-api → Environment`. If event ingestion is enabled, use `https://relay-demo-api.onrender.com/v1/webhooks/slack` as the request URL.
 
 Read [Slack OAuth installation](https://docs.slack.dev/authentication/installing-with-oauth/), [request verification](https://docs.slack.dev/authentication/verifying-requests-from-slack/), and the [Slack scopes reference](https://docs.slack.dev/reference/scopes/).
 
 ### Google Drive
 
-1. Create or select a project in the [Google Cloud Console](https://console.cloud.google.com/).
-2. Enable the [Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com).
-3. Configure the OAuth consent screen under **Google Auth Platform**. Use **Internal** for a Google Workspace-only demo where available; otherwise use **External** and add test users.
-4. Open [APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials).
-5. Create an **OAuth client ID** with application type **Web application**.
-6. Add this authorised redirect URI:
-   ```text
-   https://<api-host>/v1/oauth/google/callback
-   ```
-7. In Render Dashboard → `relay-demo-api` → **Environment**, add:
-   ```text
-   GOOGLE_CLIENT_ID=<client-id>
-   GOOGLE_CLIENT_SECRET=<client-secret>
-   GOOGLE_REDIRECT_URI=https://<api-host>/v1/oauth/google/callback
-   GOOGLE_WEBHOOK_TOKEN=<self-generated-token-if-used>
-   ```
-8. Generate a high-entropy channel token yourself and set it as `GOOGLE_WEBHOOK_TOKEN` if Drive push notifications are enabled.
+Use the existing values for `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_WEBHOOK_TOKEN`. Set `GOOGLE_REDIRECT_URI` to:
+```text
+https://relay-demo-api.onrender.com/v1/oauth/google/callback
+```
+Configure the same values in the local `.env` or in Render's `relay-demo-api → Environment`.
 
 Read Google's [web-server OAuth guide](https://developers.google.com/identity/protocols/oauth2/web-server), [OAuth scopes](https://developers.google.com/identity/protocols/oauth2/scopes), and [Drive API overview](https://developers.google.com/drive/api/guides/about-sdk).
 
@@ -357,21 +314,11 @@ ATLASSIAN_CLIENT_SECRET=
 ATLASSIAN_REDIRECT_URI=http://localhost:8000/v1/oauth/atlassian/callback
 ```
 
-### Step 1 — Create an OAuth 2.0 (3LO) app
+### Step 1 — Configure existing credentials
 
-1. Go to the **Atlassian Developer Console**: <https://developer.atlassian.com/console/myapps/>
-2. Sign in with your Atlassian account.
-3. Click **Create app** (or select an existing app).
-4. Choose **OAuth 2.0 (3LO)** as the app type.
-5. Enter an app name (e.g., "Enterprise AI Assistant").
+Use the existing `ATLASSIAN_CLIENT_ID` and `ATLASSIAN_CLIENT_SECRET` values from `.env`. Do not create or replace credentials for this setup.
 
-### Step 2 — Retrieve credentials
-
-In the app's **Settings** tab (or **Credentials** section):
-- **Client ID** → copy to `ATLASSIAN_CLIENT_ID`
-- **Client Secret** → copy to `ATLASSIAN_CLIENT_SECRET` (treat as a password; you may not see it again)
-
-### Step 3 — Configure redirect URI
+### Step 2 — Configure redirect URI
 
 In the app's **Authorization** tab, add:
 ```
@@ -383,7 +330,7 @@ Rules (verified from Atlassian docs):
 - `localhost` is allowed for development; production requires HTTPS.
 - No wildcards.
 
-### Step 4 — Select API scopes (Permissions tab)
+### Step 3 — Select API scopes (Permissions tab)
 
 Under the **Permissions** tab, enable these scopes:
 
@@ -403,13 +350,13 @@ Under the **Permissions** tab, enable these scopes:
 
 > Scopes must be declared before users authorise. Changing scopes later requires re-authorisation.
 
-### Step 5 — OAuth flow endpoints (for reference)
+### Step 4 — OAuth flow endpoints (for reference)
 
 - **Authorisation endpoint:** `https://auth.atlassian.com/authorize`
 - **Token endpoint:** `https://auth.atlassian.com/oauth/token`
 - Access tokens expire after 1 hour; use the **refresh token** to get a new one automatically (handled server-side by the app).
 
-### Step 6 — Get your Atlassian Cloud ID
+### Step 5 — Get your Atlassian Cloud ID
 
 After OAuth, call the accessible-resources endpoint to find your `cloudId`:
 ```
@@ -430,22 +377,11 @@ SLACK_CLIENT_SECRET=
 SLACK_SIGNING_SECRET=
 ```
 
-### Step 1 — Create a Slack app
+### Step 1 — Configure existing credentials
 
-1. Go to **Slack App Management**: <https://api.slack.com/apps>
-2. Click **Create New App** → **From scratch**.
-3. Enter an app name (e.g., "Enterprise AI Assistant").
-4. Select your workspace.
+Use the existing `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `SLACK_SIGNING_SECRET` values from `.env`. Do not create or replace credentials for this setup.
 
-### Step 2 — Retrieve credentials
-
-On the **Basic Information** page:
-- **App ID** — for reference only
-- **Client ID** → copy to `SLACK_CLIENT_ID`
-- **Client Secret** → copy to `SLACK_CLIENT_SECRET`
-- **Signing Secret** → copy to `SLACK_SIGNING_SECRET`
-
-### Step 3 — Configure OAuth redirect URI
+### Step 2 — Configure OAuth redirect URI
 
 Under **OAuth & Permissions**:
 1. Scroll to **Redirect URLs**.
@@ -457,7 +393,7 @@ Rules (verified from Slack docs):
 - Must exactly match or be a subdirectory of a configured URL.
 - No anchors (`#`).
 
-### Step 4 — Select bot token scopes
+### Step 3 — Select bot token scopes
 
 Under **OAuth & Permissions** → **Scopes** → **Bot Token Scopes**, add:
 
@@ -475,7 +411,7 @@ Under **OAuth & Permissions** → **Scopes** → **Bot Token Scopes**, add:
 | `users:read` | View user info |
 | `users.profile:read` | View user profile |
 
-### Step 5 — Configure event subscriptions (webhooks)
+### Step 4 — Configure event subscriptions (webhooks)
 
 Under **Event Subscriptions**:
 1. Toggle **Enable Events** to On.
@@ -488,7 +424,7 @@ Under **Event Subscriptions**:
    - `channel_archive` — channel archived
    - `channel_unarchive` — channel unarchived
 
-### Step 6 — Install the app to your workspace
+### Step 5 — Install the app to your workspace
 
 Click **Install to Workspace** and authorise. This generates:
 - **Bot User OAuth Token** (`xoxb-...`) — used for API calls
@@ -515,40 +451,16 @@ GOOGLE_CLIENT_SECRET=
 GOOGLE_REDIRECT_URI=http://localhost:8000/v1/oauth/google/callback
 ```
 
-### Step 1 — Create a Google Cloud Project
+### Step 1 — Configure existing credentials
 
-1. Go to the **Google Cloud Console**: <https://console.cloud.google.com/>
-2. Click the project selector (top bar) → **New Project**.
-3. Enter a project name (e.g., "Enterprise AI Assistant") → **Create**.
+Use the existing `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` values from `.env`. Do not create or replace credentials for this setup.
 
-### Step 2 — Enable the Google Drive API
+### Step 2 — Configure OAuth redirect URI
 
-1. Go to **API Library**: <https://console.cloud.google.com/apis/library>
-2. Search for **Google Drive API**.
-3. Select it → click **Enable**.
-
-### Step 3 — Configure OAuth consent screen
-
-1. Go to **APIs & Services** → **OAuth consent screen**.
-2. Choose **User type: Internal** (for Google Workspace) or **External** (for testing).
-3. Fill in required fields (app name, support email, developer email).
-4. Add the scopes you need (see Step 5).
-5. Save and continue.
-
-### Step 4 — Create OAuth 2.0 Client ID credentials
-
-1. Go to **APIs & Services** → **Credentials**: <https://console.cloud.google.com/apis/credentials>
-2. Click **+ Create Credentials** → **OAuth client ID**.
-3. Application type: **Web application**.
-4. Name: "Enterprise AI Assistant".
-5. Under **Authorised redirect URIs**, add:
+Set the authorised redirect URI to:
    ```
    http://localhost:8000/v1/oauth/google/callback
    ```
-6. Click **Create**.
-7. You will see:
-   - **Client ID** (ends in `.apps.googleusercontent.com`) → copy to `GOOGLE_CLIENT_ID`
-   - **Client Secret** → copy to `GOOGLE_CLIENT_SECRET`
 
 > The client secret is only shown once. Download the `client_secret.json` file for backup.
 
@@ -559,7 +471,7 @@ GOOGLE_REDIRECT_URI=http://localhost:8000/v1/oauth/google/callback
 - Must exactly match scheme, host, path, and trailing slash.
 - No wildcards, fragments, or URL shorteners.
 
-### Step 5 — Required OAuth scopes
+### Step 3 — Required OAuth scopes
 
 For the consent screen and the app's authorisation request, use:
 
@@ -595,13 +507,10 @@ RERANK_MODEL=gpt-4o-mini
 
 ### OpenAI (default)
 
-1. Go to **OpenAI Platform**: <https://platform.openai.com/api-keys>
-2. Click **Create new secret key**.
-3. Copy the key (starts with `sk-...`) to `MODEL_API_KEY`.
-4. Verify the model names are current:
-   - `GENERATION_MODEL`: `gpt-4o-mini` (fast, cheap, supports structured output)
-   - `EMBEDDING_MODEL`: `text-embedding-3-small` (1536 dimensions)
-   - `RERANK_MODEL`: `gpt-4o-mini` (reranking via prompt-based scoring)
+Use the existing `MODEL_API_KEY` value from `.env`. Keep the configured model names unless the application configuration is deliberately being changed:
+- `GENERATION_MODEL`: `gpt-4o-mini`
+- `EMBEDDING_MODEL`: `text-embedding-3-small`
+- `RERANK_MODEL`: `gpt-4o-mini`
 
 > Check current model availability at <https://platform.openai.com/docs/models>. If a model is deprecated, update both `.env` and the `embedding_model` / `generation_model` version tracking in the database.
 
@@ -724,12 +633,12 @@ Adjust based on your provider latency and freshness requirements. The spec targe
    cp .env.example .env
    ```
 
-2. Fill in the provider credentials you obtained above:
+2. Verify that the existing provider credentials are present:
    - [ ] `ATLASSIAN_CLIENT_ID` / `ATLASSIAN_CLIENT_SECRET`
    - [ ] `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` / `SLACK_SIGNING_SECRET`
    - [ ] `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`
    - [ ] `MODEL_API_KEY`
-   - [ ] `OIDC_ISSUER` / `OIDC_AUDIENCE` / `OIDC_JWKS_URL` (if using Keycloak, start it first)
+   - [ ] `OIDC_ISSUER` / `OIDC_AUDIENCE` / `OIDC_JWKS_URL` (if using an external OIDC provider)
 
 3. The following have sensible dev defaults and need no changes for local development:
    - `DATABASE_URL` (Docker Compose PostgreSQL)
