@@ -22,7 +22,9 @@ def create_oauth_state(user_id: UUID, tenant_id: UUID) -> str:
     """Create an opaque, signed state value for an OAuth callback."""
     issued_at = str(int(time.time()))
     payload = f"{tenant_id}:{user_id}:{issued_at}".encode("ascii")
-    signature = hmac.new(_state_key(), payload, hashlib.sha256).digest()
+    signature = hmac.new(
+        _state_key(), payload, hashlib.sha256
+    ).digest()
     encoded_payload = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
     encoded_signature = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
     return f"{encoded_payload}.{encoded_signature}"

@@ -29,14 +29,10 @@ from app.domain.types import (
 from app.observability.logging import get_logger
 from app.persistence.models import (
     AccessDecision,
-    AclGrant,
     EncryptedCredential,
-    IdentityLink,
-    Principal,
     SourceConnection,
     SourceObject,
 )
-from app.retrieval.temporal import active_now
 from app.settings import get_settings
 
 logger = get_logger(__name__)
@@ -148,48 +144,6 @@ async def _get_connector(source: Source) -> Connector | None:
     return None
 
 
-async def _check_fixture_access(
-    session: AsyncSession,
-    user: AuthenticatedUser,
-    source_object_id: UUID,
-    source_connection_id: UUID,
-) -> AccessCheckResult:
-    """Simulate an authoritative provider check from mutable fixture state."""
-    link_stmt = (
-        select(IdentityLink)
-        .where(
-            IdentityLink.user_id == user.user_id,
-            IdentityLink.source_connection_id == source_connection_id,
-            IdentityLink.status == "verified",
-            active_now(IdentityLink),
-        )
-        .limit(2)
-    )
-    links = (await session.execute(link_stmt)).scalars().all()
-    if len(links) != 1:
-        return AccessCheckResult(
-            outcome=AccessOutcome.DENY,
-            reason_code="fixture_identity_missing_or_ambiguous",
-        )
-
-    grant_stmt = (
-        select(AclGrant.grant_effect)
-        .join(Principal, AclGrant.principal_id == Principal.id)
-        .where(
-            AclGrant.source_object_id == source_object_id,
-            Principal.source_connection_id == source_connection_id,
-            Principal.provider_principal_id == links[0].provider_subject_id,
-            active_now(AclGrant),
-        )
-    )
-    effects = set((await session.execute(grant_stmt)).scalars().all())
-    if "deny" in effects:
-        return AccessCheckResult(outcome=AccessOutcome.DENY, reason_code="fixture_acl_deny")
-    if "allow" in effects:
-        return AccessCheckResult(outcome=AccessOutcome.ALLOW, reason_code="fixture_acl_allow")
-    return AccessCheckResult(outcome=AccessOutcome.DENY, reason_code="fixture_acl_no_grant")
-
-
 async def check_live_access(  # noqa: PLR0911
     session: AsyncSession,
     user: AuthenticatedUser,
@@ -198,27 +152,6 @@ async def check_live_access(  # noqa: PLR0911
 ) -> AccessCheckResult:
     """Perform a live provider access check for a single object."""
     start = time.monotonic()
-    object_stmt = (
-        select(
-            SourceObject.external_object_id,
-            SourceObject.source_connection_id,
-            SourceConnection.mode,
-        )
-        .join(SourceConnection, SourceObject.source_connection_id == SourceConnection.id)
-        .where(SourceObject.id == source_object_id)
-    )
-    object_row = (await session.execute(object_stmt)).first()
-    if object_row is None:
-        return AccessCheckResult(outcome=AccessOutcome.DENY, reason_code="object_not_found")
-    external_object_id, source_connection_id, connection_mode = object_row
-    if connection_mode == "fixture":
-        return await _check_fixture_access(
-            session,
-            user,
-            source_object_id,
-            source_connection_id,
-        )
-
     credential = await _resolve_delegated_credential(session, user, source)
     if credential is None:
         return AccessCheckResult(outcome=AccessOutcome.DENY, reason_code="no_delegated_credential")
@@ -227,6 +160,11 @@ async def check_live_access(  # noqa: PLR0911
             outcome=AccessOutcome.EXPIRED_CREDENTIAL,
             reason_code="credential_expired",
         )
+
+    obj_stmt = select(SourceObject.external_object_id).where(SourceObject.id == source_object_id)
+    external_object_id = (await session.execute(obj_stmt)).scalar_one_or_none()
+    if external_object_id is None:
+        return AccessCheckResult(outcome=AccessOutcome.DENY, reason_code="object_not_found")
 
     connector = await _get_connector(source)
     if connector is None:
@@ -264,26 +202,13 @@ async def check_live_access_batch(
     deadline = deadline_ms or settings.QUERY_AUTH_DEADLINE_MS
 
     object_ids = [obj_id for obj_id, _ in objects]
-    stmt = (
-        select(
-            SourceObject.id,
-            SourceObject.external_object_id,
-            SourceObject.source_connection_id,
-            SourceConnection.mode,
-        )
-        .join(SourceConnection, SourceObject.source_connection_id == SourceConnection.id)
-        .where(SourceObject.id.in_(object_ids))
+    stmt = select(SourceObject.id, SourceObject.external_object_id).where(
+        SourceObject.id.in_(object_ids)
     )
     result = await session.execute(stmt)
-    object_map: dict[UUID, tuple[str, UUID, str]] = {
-        row[0]: (row[1], row[2], row[3]) for row in result.all()
-    }
+    ext_id_map: dict[UUID, str] = {row[0]: row[1] for row in result.all()}
 
-    sources: set[Source] = {
-        src
-        for object_id, src in objects
-        if object_id in object_map and object_map[object_id][2] != "fixture"
-    }
+    sources: set[Source] = {src for _, src in objects}
     credentials: dict[Source, DelegatedCredential | None] = {}
     for src in sources:
         credentials[src] = await _resolve_delegated_credential(session, user, src)
@@ -294,19 +219,10 @@ async def check_live_access_batch(
     try:
         async with asyncio.timeout(deadline / 1000):
             for source_object_id, source in objects:
-                object_data = object_map.get(source_object_id)
-                if object_data is None:
+                external_id = ext_id_map.get(source_object_id)
+                if external_id is None:
                     results[source_object_id] = AccessCheckResult(
                         outcome=AccessOutcome.DENY, reason_code="object_not_found"
-                    )
-                    continue
-                external_id, source_connection_id, connection_mode = object_data
-                if connection_mode == "fixture":
-                    results[source_object_id] = await _check_fixture_access(
-                        session,
-                        user,
-                        source_object_id,
-                        source_connection_id,
                     )
                     continue
                 cred = credentials.get(source)

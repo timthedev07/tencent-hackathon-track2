@@ -18,27 +18,20 @@ INV-001: candidate text must not enter reranker/context/LLM/logs until auth.
 from __future__ import annotations
 
 import time
-from contextlib import suppress
 from datetime import UTC, datetime
-from uuid import UUID, uuid5
+from uuid import UUID, uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.chain import append_event
 from app.auth.credentials import EncryptedPayload, get_credential_manager
 from app.auth.oidc import AuthenticatedUser
-from app.domain.query_execution import (
-    append_query_event,
-    fail_query_execution,
-    record_query_stage,
-)
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
     AuthorisedEvidence,
     CandidateRef,
-    CompiledContext,
     GeneratedAnswer,
     QueryStatus,
     RerankedEvidence,
@@ -51,17 +44,17 @@ from app.observability.metrics import QUERY_LATENCY
 from app.persistence.models import (
     AccessDecision,
     Chunk,
-    EvidenceCapsule,
     EvidenceItem,
     ObjectVersion,
+    QueryEvent,
     QueryRun,
+    SourceConnection,
     SourceObject,
 )
 from app.persistence.session import get_session_factory, set_tenant_context
 from app.retrieval.context import compile_context
 from app.retrieval.rerank import rerank_authorised_evidence
 from app.retrieval.rrf import fuse_candidates
-from app.retrieval.temporal import active_at
 from app.retrieval.underfill import lexical_search_with_fallback, vector_search_with_fallback
 from app.retrieval.verify import build_extractive_fallback, verify_answer
 from app.settings import get_settings
@@ -75,14 +68,9 @@ _EMPTY_WORKSPACE_MESSAGE = (
 )
 
 
-async def _decrypt_query(session: AsyncSession, query_id: UUID, user_id: UUID) -> str:
+async def _decrypt_query(session: AsyncSession, query_id: UUID) -> str:
     run = (
-        await session.execute(
-            select(QueryRun).where(
-                QueryRun.id == query_id,
-                QueryRun.user_id == user_id,
-            )
-        )
+        await session.execute(select(QueryRun).where(QueryRun.id == query_id))
     ).scalar_one_or_none()
     if run is None:
         raise ValueError(f"Query run {query_id} not found")
@@ -90,10 +78,38 @@ async def _decrypt_query(session: AsyncSession, query_id: UUID, user_id: UUID) -
     return cm.decrypt_bytes(EncryptedPayload(ciphertext=run.query_ciphertext)).decode("utf-8")
 
 
-async def _load_as_of(session: AsyncSession, query_id: UUID) -> datetime | None:
-    return (
-        await session.execute(select(QueryRun.as_of).where(QueryRun.id == query_id))
+async def _update_status(session: AsyncSession, query_id: UUID, status: str) -> None:
+    run = (
+        await session.execute(select(QueryRun).where(QueryRun.id == query_id))
     ).scalar_one_or_none()
+    if run is not None and run.status != status:
+        run.status = status
+        event_type, message = _QUERY_STAGE_EVENTS.get(
+            status, (f"query.{status}", "Query progress updated")
+        )
+        last_sequence = await session.scalar(
+            select(func.max(QueryEvent.sequence_no)).where(QueryEvent.query_id == query_id)
+        )
+        session.add(
+            QueryEvent(
+                tenant_id=run.tenant_id,
+                query_id=query_id,
+                sequence_no=(last_sequence or 0) + 1,
+                event_type=event_type,
+                payload={"message": message},
+            )
+        )
+
+
+_QUERY_STAGE_EVENTS = {
+    QueryStatus.AUTHENTICATED.value: ("query.authenticated", "Checking your identity"),
+    QueryStatus.CANDIDATES.value: ("query.retrieving", "Searching connected sources"),
+    QueryStatus.REAUTHORISED.value: ("query.reauthorising", "Checking your current access"),
+    QueryStatus.RERANKED.value: ("query.reranking", "Ranking authorised evidence"),
+    QueryStatus.COMPILED.value: ("query.generating", "Preparing a grounded answer"),
+    QueryStatus.GENERATED.value: ("query.verifying", "Verifying citations"),
+    QueryStatus.VERIFIED.value: ("query.auditing", "Saving the audit record"),
+}
 
 
 async def _has_searchable_content(session: AsyncSession, tenant_id: UUID) -> bool:
@@ -106,6 +122,7 @@ async def _has_searchable_content(session: AsyncSession, tenant_id: UUID) -> boo
         select(Chunk.id)
         .join(ObjectVersion, Chunk.object_version_id == ObjectVersion.id)
         .join(SourceObject, ObjectVersion.source_object_id == SourceObject.id)
+        .join(SourceConnection, SourceObject.source_connection_id == SourceConnection.id)
         .where(
             Chunk.tenant_id == tenant_id,
             SourceObject.tenant_id == tenant_id,
@@ -123,10 +140,8 @@ async def _has_searchable_content(session: AsyncSession, tenant_id: UUID) -> boo
 
 async def _load_authorised_text(
     session: AsyncSession,
-    query_id: UUID,
     candidates: list[CandidateRef],
     authorised_object_ids: set[UUID],
-    as_of: datetime | None = None,
 ) -> list[AuthorisedEvidence]:
     if not candidates:
         return []
@@ -139,66 +154,69 @@ async def _load_authorised_text(
         select(
             Chunk.id,
             Chunk.text,
+            Chunk.ordinal,
             Chunk.object_version_id,
             ObjectVersion.source_revision,
             ObjectVersion.normalised_title,
-            ObjectVersion.content_hash,
-            ObjectVersion.observed_at,
-            ObjectVersion.valid_from,
             SourceObject.id,
             SourceObject.source,
             SourceObject.canonical_url,
         )
         .join(ObjectVersion, Chunk.object_version_id == ObjectVersion.id)
         .join(SourceObject, ObjectVersion.source_object_id == SourceObject.id)
-        .where(
-            Chunk.id.in_(chunk_ids),
-            *([active_at(ObjectVersion, as_of)] if as_of else []),
-        )
+        .where(Chunk.id.in_(chunk_ids))
     )
-    rows = (await session.execute(stmt)).all()
+    rows = list((await session.execute(stmt)).all())
 
-    selected_versions: dict[UUID, tuple[UUID, tuple[float, float, str]]] = {}
-    for row in rows:
-        object_id = row[8]
-        version_rank = (
-            row[6].timestamp(),
-            row[7].timestamp() if row[7] else float("-inf"),
-            row[3],
-        )
-        current = selected_versions.get(object_id)
-        if current is None or version_rank > current[1]:
-            selected_versions[object_id] = (row[2], version_rank)
-
+    candidate_order = {
+        candidate.chunk_id: index for index, candidate in enumerate(authorised_candidates)
+    }
+    candidate_scores = {
+        candidate.chunk_id: candidate.fused_score for candidate in authorised_candidates
+    }
+    rows.sort(key=lambda row: candidate_order.get(row[0], len(candidate_order)))
     evidence_list: list[AuthorisedEvidence] = []
     for row in rows:
-        if selected_versions[row[8]][0] != row[2]:
-            continue
-        fused_score = next(
-            (c.fused_score for c in authorised_candidates if c.chunk_id == row[0]), 0.0
-        )
         evidence_list.append(
             AuthorisedEvidence(
-                evidence_id=uuid5(query_id, str(row[0])),
+                evidence_id=uuid4(),
                 chunk_id=row[0],
-                object_version_id=row[2],
                 text=row[1],
-                source_object_id=row[8],
-                source=Source(row[9]),
-                source_revision=row[3] or "",
-                content_hash=row[5],
-                title=row[4],
-                canonical_url=row[10],
-                fused_score=fused_score,
+                chunk_ordinal=row[2],
+                source_object_id=row[6],
+                source=Source(row[7]),
+                source_revision=row[4] or "",
+                title=row[5],
+                canonical_url=row[8],
+                fused_score=candidate_scores.get(row[0], 0.0),
             )
         )
 
     logger.info(
-        "Authorised text loaded",
-        candidate_count=len(candidates),
-        evidence_count=len(evidence_list),
+        "Authorised text loaded", candidate_count=len(candidates), evidence_count=len(evidence_list)
     )
     return evidence_list
+
+
+def _reranked_for_compiled_context(
+    reranked: list[RerankedEvidence],
+    compiled_evidence: list[AuthorisedEvidence],
+) -> list[RerankedEvidence]:
+    """Return citation metadata for prompt evidence, in prompt order only."""
+    by_evidence_id = {item.evidence.evidence_id: item for item in reranked}
+    included: list[RerankedEvidence] = []
+    for rank, evidence in enumerate(compiled_evidence):
+        item = by_evidence_id.get(evidence.evidence_id)
+        if item is None:
+            continue
+        included.append(
+            RerankedEvidence(
+                evidence=evidence,
+                rerank_score=item.rerank_score,
+                rank=rank,
+            )
+        )
+    return included
 
 
 async def _audit_commit(
@@ -211,53 +229,46 @@ async def _audit_commit(
     object_source_map: dict[UUID, Source],
     status: str,
     partial_sources: list[str] | None = None,
-    compiled_context: CompiledContext | None = None,
     error_code: str | None = None,
+    model_version: str | None = None,
+    embedding_version: str | None = None,
 ) -> None:
     cm = get_credential_manager()
-    settings = get_settings()
     encrypted_answer = cm.encrypt_bytes(answer.model_dump_json().encode("utf-8"))
 
     run = (
         await session.execute(select(QueryRun).where(QueryRun.id == query_id))
     ).scalar_one_or_none()
     if run is not None:
-        if compiled_context is None:
-            compiled_context = compile_context(
-                [],
-                requester=str(run.user_id),
-                as_of=run.as_of,
-            )
         run.status = status
         run.error_code = error_code
         run.answer_ciphertext = encrypted_answer.ciphertext
         run.completed_at = datetime.now(UTC)
         run.latency_ms = int((datetime.now(UTC) - run.started_at).total_seconds() * 1000)
-        run.model_version = settings.GENERATION_MODEL
-        run.embedding_version = settings.EMBEDDING_MODEL
+        run.model_version = model_version
+        run.embedding_version = embedding_version
         run.prompt_version = "answer_v1"
-        run.policy_version = compiled_context.policy_version
         run.retriever_version = "rrf_v1"
         run.reranker_version = "deterministic-authority-v1"
         run.context_policy_version = "xml_v1"
-        run.context_compiler_version = compiled_context.context_compiler_version
-        run.authorised_context_hash = compiled_context.snapshot_hash
         if partial_sources:
             run.partial_sources = partial_sources
-
+        last_sequence = await session.scalar(
+            select(func.max(QueryEvent.sequence_no)).where(QueryEvent.query_id == query_id)
+        )
+        terminal_messages = {
+            QueryStatus.COMPLETED.value: "Answer ready",
+            QueryStatus.PARTIAL.value: "Answer ready with source warnings",
+            QueryStatus.DENIED.value: "No authorised evidence was available",
+            QueryStatus.FAILED.value: "The query failed",
+        }
         session.add(
-            EvidenceCapsule(
-                tenant_id=tenant_id,
+            QueryEvent(
+                tenant_id=run.tenant_id,
                 query_id=query_id,
-                snapshot_hash=compiled_context.snapshot_hash,
-                context_manifest={
-                    "requester": compiled_context.requester,
-                    "asOf": compiled_context.as_of.isoformat() if compiled_context.as_of else None,
-                    "policyVersion": compiled_context.policy_version,
-                    "contextCompilerVersion": compiled_context.context_compiler_version,
-                    "allowedEvidence": compiled_context.evidence_manifest,
-                },
-                answer_ciphertext=encrypted_answer.ciphertext,
+                sequence_no=(last_sequence or 0) + 1,
+                event_type=f"query.{status}",
+                payload={"message": terminal_messages.get(status, "Query finished")},
             )
         )
 
@@ -284,63 +295,34 @@ async def _audit_commit(
         quoted_span_encrypted = cm.encrypt_bytes(ev.text.encode("utf-8"))
         session.add(
             EvidenceItem(
-                id=ev.evidence_id,
                 query_id=query_id,
                 tenant_id=tenant_id,
                 chunk_id=ev.chunk_id,
-                object_version_id=ev.object_version_id,
                 source_object_id=ev.source_object_id,
                 source_revision=ev.source_revision,
+                model_evidence_id=ev.evidence_id,
                 source=ev.source.value,
                 title_snapshot=ev.title,
                 canonical_url=ev.canonical_url,
                 quoted_span_ciphertext=quoted_span_encrypted.ciphertext,
-                content_hash=ev.content_hash,
                 rank=reranked_ev.rank,
                 retrieval_score=ev.fused_score,
                 rerank_score=reranked_ev.rerank_score,
             )
         )
 
-    terminal_event = {
-        QueryStatus.PARTIAL.value: "query.partial",
-        QueryStatus.DENIED.value: "query.denied",
-        QueryStatus.FAILED.value: "query.failed",
-    }.get(status, "query.completed")
-    terminal_message = {
-        QueryStatus.PARTIAL.value: "Answer completed with partial source coverage",
-        QueryStatus.DENIED.value: "No authorised evidence was available",
-        QueryStatus.FAILED.value: "The query could not be completed",
-    }.get(status, "Answer completed")
-    terminal_payload = {"message": terminal_message, "status": status}
-    if error_code is not None:
-        terminal_payload["errorCode"] = error_code
-    if error_code == _EMPTY_WORKSPACE_CODE:
-        terminal_payload["message"] = _EMPTY_WORKSPACE_MESSAGE
-
     await append_event(
         session=session,
         tenant_id=tenant_id,
-        event_type=terminal_event,
+        event_type="query.completed",
         canonical_payload={
             "query_id": str(query_id),
             "status": status,
             "evidence_count": len(reranked),
             "access_decision_count": len(access_decisions),
             "partial_sources": partial_sources or [],
-            "authorised_context_hash": (
-                compiled_context.snapshot_hash if compiled_context else None
-            ),
         },
         query_id=query_id,
-    )
-    await append_query_event(
-        session,
-        tenant_id,
-        query_id,
-        terminal_event,
-        terminal_payload,
-        status=status,
     )
 
 
@@ -361,6 +343,8 @@ async def _audit_terminal_result(
     partial_sources: list[str] | None = None,
     reranked: list[RerankedEvidence] | None = None,
     error_code: str | None = None,
+    model_version: str | None = None,
+    embedding_version: str | None = None,
 ) -> None:
     factory = get_session_factory()
     async with factory() as session:
@@ -375,8 +359,9 @@ async def _audit_terminal_result(
             object_source_map=object_source_map or {},
             status=status,
             partial_sources=partial_sources,
-            compiled_context=None,
             error_code=error_code,
+            model_version=model_version,
+            embedding_version=embedding_version,
         )
         await session.commit()
 
@@ -393,29 +378,21 @@ async def run_query_pipeline(  # noqa: PLR0911
     try:
         async with factory() as session:
             await set_tenant_context(session, user.tenant_id)
-            query_text = await _decrypt_query(session, query_id, user.user_id)
-            as_of = await _load_as_of(session, query_id)
-
-        await record_query_stage(
-            query_id,
-            user.tenant_id,
-            status=QueryStatus.AUTHENTICATED.value,
-            event_type="query.authenticated",
-            message="Identity verified",
-        )
-        await record_query_stage(
-            query_id,
-            user.tenant_id,
-            status=QueryStatus.AUTHENTICATED.value,
-            event_type="query.retrieving",
-            message="Searching connected sources",
-        )
+            query_text = await _decrypt_query(session, query_id)
+            await _update_status(session, query_id, QueryStatus.AUTHENTICATED.value)
+            await session.commit()
 
         async with factory() as session:
             await set_tenant_context(session, user.tenant_id)
             has_searchable_content = await _has_searchable_content(session, user.tenant_id)
+            if has_searchable_content:
+                continue_pipeline = True
+            else:
+                await _update_status(session, query_id, QueryStatus.CANDIDATES.value)
+                await session.commit()
+                continue_pipeline = False
 
-        if not has_searchable_content:
+        if not continue_pipeline:
             await _audit_terminal_result(
                 query_id=query_id,
                 tenant_id=user.tenant_id,
@@ -435,25 +412,19 @@ async def run_query_pipeline(  # noqa: PLR0911
             }
 
         gateway = get_model_gateway()
-        query_embedding = await gateway.embed([query_text], settings.EMBEDDING_MODEL)
+        query_embedding = await gateway.embed([query_text], gateway.embedding_model_version)
         embedding = query_embedding[0] if query_embedding else []
 
         async with factory() as session:
             await set_tenant_context(session, user.tenant_id)
             vector_hits = await vector_search_with_fallback(
-                session,
-                user.tenant_id,
-                embedding,
-                settings.CANDIDATE_TOP_K,
-                as_of,
+                session, user.tenant_id, embedding, settings.CANDIDATE_TOP_K
             )
             lexical_hits = await lexical_search_with_fallback(
-                session,
-                user.tenant_id,
-                query_text,
-                settings.CANDIDATE_TOP_K,
-                as_of,
+                session, user.tenant_id, query_text, settings.CANDIDATE_TOP_K
             )
+            await _update_status(session, query_id, QueryStatus.CANDIDATES.value)
+            await session.commit()
 
         candidates = fuse_candidates(vector_hits, lexical_hits, settings.RRF_K)
 
@@ -463,16 +434,9 @@ async def run_query_pipeline(  # noqa: PLR0911
                 tenant_id=user.tenant_id,
                 answer=_terminal_answer(),
                 status=QueryStatus.DENIED.value,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
-
-        await record_query_stage(
-            query_id,
-            user.tenant_id,
-            status=QueryStatus.CANDIDATES.value,
-            event_type="query.reauthorising",
-            message="Checking your current access",
-        )
 
         from app.authorisation.live_check import check_live_access_batch
         from app.authorisation.local_acl import batch_check_local_acl
@@ -485,12 +449,7 @@ async def run_query_pipeline(  # noqa: PLR0911
                 if c.source_object_id not in seen_objects:
                     acl_candidates.append((c.source_object_id, c.source))
                     seen_objects.add(c.source_object_id)
-            local_verdicts = await batch_check_local_acl(
-                session,
-                user.user_id,
-                acl_candidates,
-                as_of,
-            )
+            local_verdicts = await batch_check_local_acl(session, user.user_id, acl_candidates)
 
         local_denied = {
             obj_id for obj_id, v in local_verdicts.items() if v.outcome == AccessOutcome.DENY
@@ -511,6 +470,7 @@ async def run_query_pipeline(  # noqa: PLR0911
                 status=QueryStatus.DENIED.value,
                 access_decisions=local_denied_results,
                 object_source_map=local_object_source_map,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
 
@@ -557,18 +517,17 @@ async def run_query_pipeline(  # noqa: PLR0911
                 status=QueryStatus.DENIED.value,
                 access_decisions=all_access_results,
                 object_source_map=all_object_source_map,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
 
         async with factory() as session:
             await set_tenant_context(session, user.tenant_id)
             evidence_list = await _load_authorised_text(
-                session,
-                query_id,
-                candidates_after_local,
-                authorised_object_ids,
-                as_of,
+                session, candidates_after_local, authorised_object_ids
             )
+            await _update_status(session, query_id, QueryStatus.REAUTHORISED.value)
+            await session.commit()
 
         if not evidence_list:
             await _audit_terminal_result(
@@ -578,33 +537,26 @@ async def run_query_pipeline(  # noqa: PLR0911
                 status=QueryStatus.DENIED.value,
                 access_decisions=all_access_results,
                 object_source_map=all_object_source_map,
+                embedding_version=gateway.embedding_model_version,
             )
             return {"status": "denied", "query_id": str(query_id)}
 
-        await record_query_stage(
-            query_id,
-            user.tenant_id,
-            status=QueryStatus.REAUTHORISED.value,
-            event_type="query.reranking",
-            message="Ranking authorised evidence",
-        )
         reranked = rerank_authorised_evidence(evidence_list, settings.FINAL_EVIDENCE_COUNT)
 
-        context_evidence = [r.evidence for r in reranked]
-        compiled_context = compile_context(
-            context_evidence,
-            query_text=query_text,
-            requester=user.oidc_subject,
-            as_of=as_of,
-        )
+        async with factory() as session:
+            await set_tenant_context(session, user.tenant_id)
+            await _update_status(session, query_id, QueryStatus.RERANKED.value)
+            await session.commit()
 
-        await record_query_stage(
-            query_id,
-            user.tenant_id,
-            status=QueryStatus.COMPILED.value,
-            event_type="query.generating",
-            message="Generating answer",
-        )
+        context_evidence = [r.evidence for r in reranked]
+        compiled_context = compile_context(context_evidence, query_text=query_text)
+        context_evidence = compiled_context.evidence_blocks
+        compiled_reranked = _reranked_for_compiled_context(reranked, context_evidence)
+
+        async with factory() as session:
+            await set_tenant_context(session, user.tenant_id)
+            await _update_status(session, query_id, QueryStatus.COMPILED.value)
+            await session.commit()
 
         generated_obj = await gateway.generate(compiled_context, OutputGeneratedAnswer)
         generated_answer = (
@@ -616,13 +568,10 @@ async def run_query_pipeline(  # noqa: PLR0911
             )
         )
 
-        await record_query_stage(
-            query_id,
-            user.tenant_id,
-            status=QueryStatus.GENERATED.value,
-            event_type="query.verifying",
-            message="Verifying citations",
-        )
+        async with factory() as session:
+            await set_tenant_context(session, user.tenant_id)
+            await _update_status(session, query_id, QueryStatus.GENERATED.value)
+            await session.commit()
 
         verification = verify_answer(generated_answer, context_evidence)
         if not verification.valid:
@@ -644,13 +593,10 @@ async def run_query_pipeline(  # noqa: PLR0911
         else:
             final_answer = verification.answer or generated_answer
 
-        await record_query_stage(
-            query_id,
-            user.tenant_id,
-            status=QueryStatus.VERIFIED.value,
-            event_type="query.auditing",
-            message="Saving audit record",
-        )
+        async with factory() as session:
+            await set_tenant_context(session, user.tenant_id)
+            await _update_status(session, query_id, QueryStatus.VERIFIED.value)
+            await session.commit()
 
         is_partial = bool(partial_sources)
         final_status = QueryStatus.PARTIAL.value if is_partial else QueryStatus.COMPLETED.value
@@ -662,12 +608,13 @@ async def run_query_pipeline(  # noqa: PLR0911
                 query_id=query_id,
                 tenant_id=user.tenant_id,
                 answer=final_answer,
-                reranked=reranked,
+                reranked=compiled_reranked,
                 access_decisions=all_access_results,
                 object_source_map=all_object_source_map,
                 status=final_status,
                 partial_sources=list(partial_sources) if partial_sources else None,
-                compiled_context=compiled_context,
+                model_version=gateway.generation_model_version,
+                embedding_version=gateway.embedding_model_version,
             )
             await session.commit()
 
@@ -678,12 +625,18 @@ async def run_query_pipeline(  # noqa: PLR0911
 
     except Exception as exc:
         logger.exception("Query pipeline failed", query_id=str(query_id), error=str(exc))
-        with suppress(Exception):
-            await fail_query_execution(
-                query_id,
-                user.tenant_id,
-                error_code="PIPELINE_ERROR",
-                message="The query could not be completed.",
-            )
+        try:
+            async with factory() as session:
+                await set_tenant_context(session, user.tenant_id)
+                await _update_status(session, query_id, QueryStatus.FAILED.value)
+                run = (
+                    await session.execute(select(QueryRun).where(QueryRun.id == query_id))
+                ).scalar_one_or_none()
+                if run is not None:
+                    run.error_code = "PIPELINE_ERROR"
+                    run.completed_at = datetime.now(UTC)
+                await session.commit()
+        except Exception:
+            pass
         QUERY_LATENCY.labels(status="failed").observe(time.monotonic() - start_time)
         return {"status": "failed", "query_id": str(query_id), "error_code": "PIPELINE_ERROR"}

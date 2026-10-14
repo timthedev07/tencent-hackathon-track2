@@ -26,7 +26,7 @@ class ForbiddenError(ConnectorError):
 
 class RateLimitedError(ConnectorError):
     def __init__(
-        self, message: str = "Rate limited by provider", retry_after: float | None = None
+        self, message: str = "Rate limited by provider", retry_after: int | None = None
     ) -> None:
         self.retry_after = retry_after
         super().__init__(ConnectorOutcome.RATE_LIMITED, message)

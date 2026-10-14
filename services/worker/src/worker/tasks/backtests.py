@@ -14,9 +14,9 @@ logger = get_logger(__name__)
 @celery_app.task(name="worker.tasks.backtests.run_retrieval_backtest")  # type: ignore[misc]
 def run_retrieval_backtest(query_set_id: str) -> dict[str, Any]:
     """Run retrieval quality backtests against a golden query set."""
-    import asyncio
+    from worker.async_runner import run_async
 
-    return asyncio.run(_run_retrieval_backtest(query_set_id))
+    return run_async(_run_retrieval_backtest(query_set_id))
 
 
 async def _run_retrieval_backtest(query_set_id: str) -> dict[str, Any]:

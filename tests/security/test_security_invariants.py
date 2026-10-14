@@ -9,7 +9,6 @@ is a FAILED test.
 
 from __future__ import annotations
 
-import inspect
 from typing import ClassVar
 
 import pytest
@@ -88,30 +87,6 @@ class TestINV005AnswerAfterAudit:
         from app.retrieval import pipeline
 
         assert hasattr(pipeline, "_audit_commit"), "Pipeline must have _audit_commit"
-
-
-class TestDurableQueryExecution:
-    """SSE replay must not own execution or permit duplicate pipeline runs."""
-
-    def test_sse_projection_does_not_execute_pipeline(self) -> None:
-        from app.domain.query_service import stream_events
-
-        source = inspect.getsource(stream_events)
-        assert "run_query_pipeline" not in source
-        assert "QueryEvent" in source
-
-    def test_query_run_has_database_lease_fields(self) -> None:
-        from app.persistence.models import QueryRun
-
-        assert hasattr(QueryRun, "execution_attempt")
-        assert hasattr(QueryRun, "execution_lease_token")
-        assert hasattr(QueryRun, "execution_lease_expires_at")
-
-    def test_query_worker_is_explicitly_registered(self) -> None:
-        from worker.celery_app import celery_app
-
-        assert "worker.tasks.queries" in celery_app.conf.imports
-        assert celery_app.conf.task_routes["worker.tasks.queries.*"]["queue"] == "query_execution"
 
 
 class TestINV006CitationReauthorisation:

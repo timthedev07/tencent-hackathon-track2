@@ -8,9 +8,6 @@ Permission-safe cross-platform enterprise AI assistant spanning Confluence, Jira
 
 ## Quick Start
 
-Use an LTS Node.js release supported by the frontend toolchain: Node 22.22.2+
-within the Node 22 line, Node 24.15.0+, or Node 26+.
-
 ```bash
 # 1. Install dependencies
 make install
@@ -23,15 +20,12 @@ docker compose up -d postgres redis minio
 # 3. Run database migrations
 make migrate
 
-# 4. Seed synthetic fixtures (optional, for demo)
-make seed
-
-# 5. Start the API and worker
+# 4. Start the API and frontend
 make dev          # API on :8000
 make frontend-dev # Web on :3000
 
-# 6. Run Celery worker (separate terminal)
-uv run celery -A worker.celery_app worker --loglevel=info
+# 5. Run the Celery worker and scheduler
+make worker
 ```
 
 ## Development Commands
@@ -39,17 +33,18 @@ uv run celery -A worker.celery_app worker --loglevel=info
 | Command | Description |
 |---|---|
 | `make install` | Install Python dependencies via uv |
-| `make frontend-install` | Install frontend dependencies via npm |
+| `make frontend-install` | Install frontend dependencies via yarn |
 | `make dev` | Start FastAPI dev server |
 | `make frontend-dev` | Start Next.js dev server |
+| `make worker` | Run asynchronous ingestion tasks and schedule provider reconciliation |
+| `make beat` | Run the scheduler separately when the worker is managed independently |
 | `make lint` | Lint backend (ruff) |
-| `make format` | Format backend (ruff) |
+| `make format` | Format Python with Ruff and supported source files with Prettier |
+| `make format-check` | Check Python and supported source-file formatting without changing files |
 | `make typecheck` | Type-check backend (pyright strict) |
 | `make test` | Run backend unit tests |
 | `make test-security` | Run security invariant tests (SEC-001–010) |
 | `make migrate` | Run Alembic migrations |
-| `make seed` | Seed synthetic fixtures |
-| `make reset` | Reset demo environment |
 | `make openapi` | Regenerate OpenAPI + TS client |
 | `make e2e` | Run Playwright end-to-end tests |
 | `make ci` | Run full CI pipeline locally |
@@ -69,7 +64,7 @@ See [`docs/standards.md`](docs/standards.md) for the full set of enforced standa
 - Prettier, ESLint, Ruff, Pyright strict
 - Security: SQL injection prevention, CSRF, envelope encryption, INSERT-only audit
 - British English spelling consistency
-- Package managers: uv (Python), npm (frontend)
+- Package managers: uv (Python), yarn (frontend)
 
 ## Implementation Plan
 

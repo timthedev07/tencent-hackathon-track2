@@ -1,17 +1,16 @@
-"""Celery application with 11 priority queues.
+"""Celery application with 10 priority queues.
 
 Queues by priority (1 = highest):
 1. deletions_priority
 2. acl_priority
-3. query_execution
-4. webhook_ingest
-5. source_fetch
-6. normalisation
-7. chunking
-8. embeddings
-9. reconciliation
-10. backfill
-11. audit_checkpoint / backtests
+3. webhook_ingest
+4. source_fetch
+5. normalisation
+6. chunking
+7. embeddings
+8. reconciliation
+9. backfill
+10. audit_checkpoint / backtests
 """
 
 from __future__ import annotations
@@ -67,6 +66,20 @@ celery_app = Celery(
     "enterprise_assistant",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
+    include=[
+        "worker.tasks.acl",
+        "worker.tasks.audit",
+        "worker.tasks.backfill",
+        "worker.tasks.backtests",
+        "worker.tasks.chunk",
+        "worker.tasks.deletions",
+        "worker.tasks.embed",
+        "worker.tasks.fetch",
+        "worker.tasks.normalise",
+        "worker.tasks.queries",
+        "worker.tasks.reconcile",
+        "worker.tasks.webhook",
+    ],
 )
 
 # ── Queue definitions (priority order) ──────────────────────────────
@@ -122,21 +135,3 @@ celery_app.conf.task_routes = {
     "worker.tasks.audit.*": {"queue": "audit_checkpoint"},
     "worker.tasks.backtests.*": {"queue": "audit_checkpoint"},
 }
-
-# Import each task module explicitly. Celery autodiscovery expects a
-# ``tasks.py`` module inside each package, while this project keeps one task
-# module per pipeline stage under ``worker.tasks``.
-celery_app.conf.imports = (
-    "worker.tasks.acl",
-    "worker.tasks.audit",
-    "worker.tasks.backfill",
-    "worker.tasks.backtests",
-    "worker.tasks.chunk",
-    "worker.tasks.deletions",
-    "worker.tasks.embed",
-    "worker.tasks.fetch",
-    "worker.tasks.normalise",
-    "worker.tasks.queries",
-    "worker.tasks.reconcile",
-    "worker.tasks.webhook",
-)

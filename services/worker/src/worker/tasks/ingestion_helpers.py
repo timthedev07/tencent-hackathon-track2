@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.auth.credentials import EncryptedPayload, get_credential_manager
-from app.connectors.confluence import ConfluenceConnector
+from app.connectors.confluence import ConfluenceConnector, get_atlassian_accessible_resources
 from app.connectors.google_drive import GoogleDriveConnector
 from app.connectors.jira import JiraConnector
 from app.connectors.oauth import pack_tokens, refresh_access_token, unpack_tokens
@@ -34,8 +34,15 @@ class IngestionContext:
 
 
 def validate_message(message: dict[str, object]) -> None:
-    """Reject unsupported Celery payload versions before provider work."""
+    """Reject unsupported Celery payload versions before provider work.
+
+    Messages created by the original fetch task omitted the version field.
+    Treat those already-queued messages as version 1 so a deployment can drain
+    them safely while all newly published messages carry the field explicitly.
+    """
     version = message.get("schemaVersion")
+    if version is None:
+        return
     if version != 1:
         raise ValueError("INGESTION_SCHEMA_UNSUPPORTED")
 
@@ -53,6 +60,9 @@ def connector_for(source: Source) -> Connector:
 async def load_ingestion_context(
     tenant_id: str,
     connection_id: str,
+    user_id: str | None = None,
+    *,
+    verify_atlassian: bool = False,
 ) -> IngestionContext:
     """Load one connected source and its latest user-scoped credential.
 
@@ -61,6 +71,7 @@ async def load_ingestion_context(
     """
     tenant_uuid = UUID(tenant_id)
     connection_uuid = UUID(connection_id)
+    user_uuid = UUID(user_id) if user_id else None
     factory = get_session_factory()
     async with factory() as session:
         await set_tenant_context(session, tenant_uuid)
@@ -81,6 +92,11 @@ async def load_ingestion_context(
                 EncryptedCredential.tenant_id == tenant_uuid,
                 EncryptedCredential.user_id.is_not(None),
                 EncryptedCredential.credential_type != "service_account",
+                *(
+                    [EncryptedCredential.user_id == user_uuid]
+                    if user_uuid is not None
+                    else []
+                ),
             )
             .order_by(EncryptedCredential.updated_at.desc())
         )
@@ -123,13 +139,19 @@ async def load_ingestion_context(
             source=source,
             external_workspace_id=connection_row.external_workspace_id,
             display_name=connection_row.display_name,
+            scope_config=connection_row.scope_config or {},
             status=SourceConnectionStatus(str(connection_row.status)),
             last_sync_at=connection_row.last_sync_at,
             last_reconcile_at=connection_row.last_reconcile_at,
         )
 
     refreshed = False
-    if _needs_refresh(expires_at) or not isinstance(access_token, str) or not access_token:
+    if (
+        _needs_refresh(expires_at)
+        or (expires_at is None and isinstance(refresh_token, str) and bool(refresh_token))
+        or not isinstance(access_token, str)
+        or not access_token
+    ):
         if not isinstance(refresh_token, str) or not refresh_token:
             raise ValueError("SOURCE_CREDENTIAL_EXPIRED")
         refreshed_payload = await refresh_access_token(source, refresh_token)
@@ -137,6 +159,25 @@ async def load_ingestion_context(
         refresh_token = refreshed_payload.get("refresh_token") or refresh_token
         expires_at = refreshed_payload.get("expires_at")
         refreshed = True
+
+    cloud_id = connection.external_workspace_id
+    if source in {Source.CONFLUENCE, Source.JIRA} and (
+        verify_atlassian or cloud_id == "atlassian-workspace"
+    ):
+        try:
+            resources = await get_atlassian_accessible_resources(access_token)
+        except ValueError as exc:
+            if str(exc) != "SOURCE_CREDENTIAL_EXPIRED" or not isinstance(refresh_token, str):
+                raise
+            refreshed_payload = await refresh_access_token(source, refresh_token)
+            access_token = refreshed_payload["access_token"]
+            refresh_token = refreshed_payload.get("refresh_token") or refresh_token
+            expires_at = refreshed_payload.get("expires_at")
+            refreshed = True
+            resources = await get_atlassian_accessible_resources(access_token)
+        resource_ids = {str(resource["id"]) for resource in resources}
+        if cloud_id not in resource_ids:
+            cloud_id = str(resources[0]["id"])
 
     if refreshed:
         async with factory() as session:
@@ -160,12 +201,25 @@ async def load_ingestion_context(
                 row.expires_at = expires_at
                 await session.commit()
 
+    if source in {Source.CONFLUENCE, Source.JIRA} and cloud_id != connection.external_workspace_id:
+        async with factory() as session:
+            await set_tenant_context(session, tenant_uuid)
+            row = await session.scalar(
+                select(SourceConnectionRow).where(
+                    SourceConnectionRow.id == connection_uuid,
+                    SourceConnectionRow.tenant_id == tenant_uuid,
+                )
+            )
+            if row is not None:
+                row.external_workspace_id = cloud_id
+                await session.commit()
+
     metadata = {
-        "workspace_id": connection.external_workspace_id,
+        "workspace_id": cloud_id,
         "provider_subject_id": provider_subject,
     }
     if source in {Source.CONFLUENCE, Source.JIRA}:
-        metadata["cloud_id"] = connection.external_workspace_id
+        metadata["cloud_id"] = cloud_id
     return IngestionContext(
         connection=connection,
         credential=DelegatedCredential(

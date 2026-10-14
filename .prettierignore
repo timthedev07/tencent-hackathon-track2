@@ -1,8 +1,12 @@
 node_modules/
+.venv/
+.git/
 .next/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
 dist/
 build/
 coverage/
 packages/contracts/generated/
-apps/web/next-env.d.ts
 *.md

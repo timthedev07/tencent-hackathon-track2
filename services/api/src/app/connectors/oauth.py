@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from http import HTTPStatus
 from typing import Any
 
 import httpx
 
 from app.domain.types import Source
 from app.settings import get_settings
+
+
+class CredentialExpiredError(ValueError):
+    """Provider rejected the stored OAuth credential and reauthorisation is required."""
 
 
 def pack_tokens(
@@ -95,13 +98,16 @@ async def _post_token(
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(url, json=json, data=data)
     except httpx.HTTPError as exc:
-        raise ValueError("SOURCE_CREDENTIAL_EXPIRED") from exc
-    if response.status_code >= HTTPStatus.BAD_REQUEST:
-        raise TypeError("SOURCE_CREDENTIAL_EXPIRED")
+        raise CredentialExpiredError("SOURCE_CREDENTIAL_EXPIRED") from exc
+    if response.is_error:
+        # Keep provider credential failures on the same error path as network
+        # and malformed-response failures. Callers deliberately handle this
+        # as a recoverable reauthorisation condition.
+        raise CredentialExpiredError("SOURCE_CREDENTIAL_EXPIRED")
     try:
         payload = response.json()
     except ValueError as exc:
-        raise ValueError("SOURCE_CREDENTIAL_EXPIRED") from exc
+        raise CredentialExpiredError("SOURCE_CREDENTIAL_EXPIRED") from exc
     if not isinstance(payload, dict):
-        raise TypeError("SOURCE_CREDENTIAL_EXPIRED")
+        raise CredentialExpiredError("SOURCE_CREDENTIAL_EXPIRED")
     return payload

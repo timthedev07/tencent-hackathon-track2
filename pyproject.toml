@@ -29,8 +29,6 @@ dependencies = [
     "sse-starlette>=2.1.0",
     "boto3>=1.35.0",
     "tiktoken>=0.8.0",
-    "opentelemetry-sdk>=1.28.0",
-    "opentelemetry-exporter-otlp-proto-http>=1.28.0",
 ]
 
 [project.optional-dependencies]
@@ -61,8 +59,6 @@ pythonpath = ["services/api/src", "services/worker/src"]
 filterwarnings = ["error"]
 markers = [
     "security: Security invariant tests (SEC-001 through SEC-010)",
-    "postgres: Requires a migrated and seeded PostgreSQL database",
-    "celery: Requires a live Celery worker and Redis broker/backend",
 ]
 
 [tool.coverage.run]

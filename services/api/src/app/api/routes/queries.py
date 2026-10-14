@@ -7,9 +7,7 @@ GET /v1/queries/{queryId} — final result
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
-from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -27,23 +25,19 @@ router = APIRouter()
 async def _json_query_events(events: AsyncIterator[dict]) -> AsyncIterator[JSONServerSentEvent]:
     """Encode query event payloads as JSON on the SSE wire."""
     async for item in events:
-        data = item["data"]
-        if isinstance(data, str):
-            data = json.loads(data)
         yield JSONServerSentEvent(
             event=item["event"],
-            data=data,
-            id=item.get("id"),
+            data=item["data"],
+            id=str(item["id"]) if item.get("id") is not None else None,
         )
 
 
 class CreateQueryRequest(BaseModel):
     """Query creation request — must NOT contain tenant_id (INV-007)."""
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="forbid")
 
     query: str = Field(min_length=1, max_length=2000)
-    as_of: datetime | None = Field(default=None, alias="asOf")
 
     @field_validator("query")
     @classmethod
@@ -53,13 +47,6 @@ class CreateQueryRequest(BaseModel):
             raise ValueError("Query must contain non-whitespace text")
         return cleaned
 
-    @field_validator("as_of")
-    @classmethod
-    def require_timezone(cls, value: datetime | None) -> datetime | None:
-        if value is not None and value.tzinfo is None:
-            raise ValueError("asOf must include a timezone")
-        return value
-
 
 class CreateQueryResponse(BaseModel):
     queryId: str
@@ -68,6 +55,8 @@ class CreateQueryResponse(BaseModel):
 
 class Citation(BaseModel):
     evidenceId: str
+    referenceId: str | None = None
+    itemKey: str | None = None
     source: str
     label: str | None = None
     url: str | None = None
@@ -76,9 +65,7 @@ class Citation(BaseModel):
 class QueryResult(BaseModel):
     queryId: str
     status: str
-    asOf: str | None = None
     answer: str | None = None
-    claims: list[dict] = Field(default_factory=list)
     citations: list[Citation] = Field(default_factory=list)
     partialSourceWarnings: list[dict] = Field(default_factory=list)
     errorCode: str | None = None
@@ -103,7 +90,6 @@ async def create_query(
         user_id=user.user_id,
         tenant_id=user.tenant_id,
         query_text=request.query,
-        as_of=request.as_of,
     )
     bind_context(query_id=query_run["id"])
     try:
@@ -138,8 +124,9 @@ async def stream_query_events(
     from app.domain.query_service import ensure_query_access, stream_events
 
     await ensure_query_access(query_id, user)
-    events = stream_events(query_id, user, after_sequence=last_event_id or 0)
-    return EventSourceResponse(_json_query_events(events))
+    return EventSourceResponse(
+        _json_query_events(stream_events(query_id, user, after_sequence=last_event_id or 0))
+    )
 
 
 @router.get("/queries/{query_id}", response_model=QueryResult)

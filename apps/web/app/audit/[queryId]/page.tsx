@@ -2,8 +2,17 @@
 
 import { use, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, FileSearch, Fingerprint, ShieldAlert, ShieldCheck } from 'lucide-react'
+import {
+  ArrowLeft,
+  Check,
+  Clipboard,
+  FileSearch,
+  Fingerprint,
+  ShieldAlert,
+  ShieldCheck,
+} from 'lucide-react'
 import { GlassPanel } from '@/components/GlassPanel'
+import { AnswerContent } from '@/components/AnswerContent'
 import { ApiClientError, getAuditCapsule, type AuditResponse } from '@/lib/api/client'
 
 export default function AuditPage({ params }: { params: Promise<{ queryId: string }> }) {
@@ -11,6 +20,7 @@ export default function AuditPage({ params }: { params: Promise<{ queryId: strin
   const [audit, setAudit] = useState<AuditResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [copied, setCopied] = useState(false)
   useEffect(() => {
     getAuditCapsule(queryId)
       .then(setAudit)
@@ -19,6 +29,12 @@ export default function AuditPage({ params }: { params: Promise<{ queryId: strin
       )
       .finally(() => setIsLoading(false))
   }, [queryId])
+  const copyAnswer = async () => {
+    if (!audit?.answer) return
+    await navigator.clipboard.writeText(audit.answer)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1600)
+  }
 
   if (isLoading) return <AuditLoading />
   if (error || !audit)
@@ -31,10 +47,10 @@ export default function AuditPage({ params }: { params: Promise<{ queryId: strin
             {error ?? 'You may not have the compliance role, or this query does not exist.'}
           </p>
           <Link
-            href="/query"
+            href="/compliance"
             className="mt-6 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs ghost-glass"
           >
-            <ArrowLeft size={13} /> Back to query
+            <ArrowLeft size={13} /> Back to compliance
           </Link>
         </GlassPanel>
       </div>
@@ -45,10 +61,10 @@ export default function AuditPage({ params }: { params: Promise<{ queryId: strin
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
           <Link
-            href="/query"
+            href="/compliance"
             className="mb-5 inline-flex items-center gap-2 text-xs text-white/45 hover:text-white"
           >
-            <ArrowLeft size={13} /> Back to query
+            <ArrowLeft size={13} /> Back to compliance
           </Link>
           <div className="section-kicker flex items-center gap-2">
             <FileSearch size={13} /> Compliance record
@@ -86,6 +102,31 @@ export default function AuditPage({ params }: { params: Promise<{ queryId: strin
           ]}
         />
       </div>
+      {audit.answer && (
+        <GlassPanel className="mt-4 p-6 md:p-8" intensity="strong">
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="section-kicker flex items-center gap-2">
+                <ShieldCheck size={13} /> Original model response
+              </div>
+              <h2 className="mt-2 text-xl font-semibold tracking-tight text-white">
+                Here&apos;s what the user received
+              </h2>
+            </div>
+            <button
+              className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs ghost-glass"
+              onClick={copyAnswer}
+            >
+              {copied ? <Check size={13} /> : <Clipboard size={13} />} {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          <AnswerContent answer={audit.answer} citations={audit.citations} />
+          <div className="mt-7 flex flex-wrap items-center gap-2 border-t border-white/8 pt-4 text-[11px] text-white/35">
+            <Check size={13} className="text-teal-300" /> Response committed after citation and
+            audit verification
+          </div>
+        </GlassPanel>
+      )}
       <AuditTable
         title="Access decisions"
         copy="Source-level authorisation decisions recorded during the query."

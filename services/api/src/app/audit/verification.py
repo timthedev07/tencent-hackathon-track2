@@ -23,14 +23,6 @@ async def verify_chain(
     event_hash_n = SHA-256(canonical_json(event_n) || previous_event_hash)
     First event uses fixed genesis marker.
     """
-    return bool((await verify_chain_report(session, tenant_id))["valid"])
-
-
-async def verify_chain_report(
-    session: AsyncSession,
-    tenant_id: UUID,
-) -> dict[str, object]:
-    """Verify the chain and identify the first invalid event, if any."""
     stmt = (
         select(AuditEvent).where(AuditEvent.tenant_id == tenant_id).order_by(AuditEvent.sequence_no)
     )
@@ -38,7 +30,7 @@ async def verify_chain_report(
     events = result.scalars().all()
 
     if not events:
-        return {"valid": True, "eventCount": 0, "firstInvalidEventId": None}
+        return True  # Empty chain is valid
 
     previous_hash = GENESIS_MARKER
     expected_sequence = 1
@@ -49,13 +41,7 @@ async def verify_chain_report(
                 event_id=str(event.id),
                 sequence_no=event.sequence_no,
             )
-            return {
-                "valid": False,
-                "eventCount": len(events),
-                "firstInvalidEventId": str(event.id),
-                "firstInvalidSequence": event.sequence_no,
-                "reason": "sequence_or_predecessor_mismatch",
-            }
+            return False
         expected_hash = compute_event_hash(event, previous_hash)
         if event.event_hash != expected_hash:
             logger.error(
@@ -65,20 +51,9 @@ async def verify_chain_report(
                 expected=expected_hash,
                 actual=event.event_hash,
             )
-            return {
-                "valid": False,
-                "eventCount": len(events),
-                "firstInvalidEventId": str(event.id),
-                "firstInvalidSequence": event.sequence_no,
-                "reason": "event_hash_mismatch",
-            }
+            return False
         previous_hash = event.event_hash
         expected_sequence += 1
 
     logger.info("Audit chain verified", tenant_id=str(tenant_id), events=len(events))
-    return {
-        "valid": True,
-        "eventCount": len(events),
-        "firstInvalidEventId": None,
-        "chainHead": previous_hash,
-    }
+    return True

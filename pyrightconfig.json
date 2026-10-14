@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/pyright-pyright/main/pyright/src/main/resources/pyrightconfig.schema.json",
   "include": ["services/api/src", "services/worker/src", "tests"],
   "exclude": ["**/node_modules", "**/__pycache__", ".venv", "packages/contracts/generated"],
   "typeCheckingMode": "strict",

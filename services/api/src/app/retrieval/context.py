@@ -7,12 +7,10 @@ Never interpolate source text into system-instruction sections.
 
 from __future__ import annotations
 
-import hashlib
 import re
 import unicodedata
-from datetime import datetime
+from uuid import UUID
 
-from app.audit.canonicalise import canonical_json
 from app.domain.types import AuthorisedEvidence, CompiledContext
 from app.observability.logging import get_logger
 
@@ -76,15 +74,47 @@ def _build_evidence_block(evidence: AuthorisedEvidence) -> str:
     )
 
 
+def _order_adjacent_chunks(
+    evidence_list: list[AuthorisedEvidence],
+) -> list[AuthorisedEvidence]:
+    """Keep contiguous chunks together without changing document priority."""
+    chunks_by_document: dict[tuple[UUID, str], list[AuthorisedEvidence]] = {}
+    for evidence in evidence_list:
+        if evidence.chunk_ordinal is None:
+            continue
+        key = (evidence.source_object_id, evidence.source_revision)
+        chunks_by_document.setdefault(key, []).append(evidence)
+
+    contiguous_runs: dict[UUID, list[AuthorisedEvidence]] = {}
+    for chunks in chunks_by_document.values():
+        chunks.sort(key=lambda item: item.chunk_ordinal or 0)
+        run: list[AuthorisedEvidence] = []
+        previous_ordinal: int | None = None
+        for chunk in chunks:
+            if previous_ordinal is not None and chunk.chunk_ordinal != previous_ordinal + 1:
+                for item in run:
+                    contiguous_runs[item.evidence_id] = run
+                run = []
+            run.append(chunk)
+            previous_ordinal = chunk.chunk_ordinal
+        for item in run:
+            contiguous_runs[item.evidence_id] = run
+
+    ordered: list[AuthorisedEvidence] = []
+    emitted: set[UUID] = set()
+    for evidence in evidence_list:
+        if evidence.evidence_id in emitted:
+            continue
+        run = contiguous_runs.get(evidence.evidence_id, [evidence])
+        ordered.extend(item for item in run if item.evidence_id not in emitted)
+        emitted.update(item.evidence_id for item in run)
+    return ordered
+
+
 def compile_context(
     evidence_list: list[AuthorisedEvidence],
     max_tokens: int | None = None,
     query_text: str = "",
-    *,
-    requester: str = "unknown",
-    as_of: datetime | None = None,
-    policy_version: str = "policy-v1",
-    context_compiler_version: str = "context-v1",
 ) -> CompiledContext:
     token_budget = max_tokens or (_MAX_CONTEXT_TOKENS - _SYSTEM_TOKEN_RESERVE)
     system_prompt = _SYSTEM_INSTRUCTIONS
@@ -94,16 +124,17 @@ def compile_context(
     evidence_blocks: list[AuthorisedEvidence] = []
     used_tokens = 0
 
-    for evidence in evidence_list:
+    ordered_evidence = _order_adjacent_chunks(evidence_list)
+    for evidence in ordered_evidence:
         block = _build_evidence_block(evidence)
         block_tokens = _estimate_tokens(block)
         if used_tokens + block_tokens > remaining_budget:
             logger.info(
-                "Token budget exhausted — truncating evidence",
+                "Evidence skipped because the context budget is exhausted",
                 included=len(evidence_blocks),
-                total=len(evidence_list),
+                total=len(ordered_evidence),
             )
-            break
+            continue
         evidence_blocks.append(evidence)
         used_tokens += block_tokens
 
@@ -113,34 +144,9 @@ def compile_context(
         token_count=system_tokens + used_tokens,
     )
 
-    evidence_manifest = [
-        {
-            "evidence_id": str(evidence.evidence_id),
-            "object_version_id": (
-                str(evidence.object_version_id) if evidence.object_version_id else None
-            ),
-            "content_hash": evidence.content_hash,
-        }
-        for evidence in evidence_blocks
-    ]
-    snapshot = {
-        "requester": requester,
-        "as_of": as_of.isoformat() if as_of else None,
-        "policy_version": policy_version,
-        "context_compiler_version": context_compiler_version,
-        "allowed_evidence": evidence_manifest,
-    }
-    snapshot_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
-
     return CompiledContext(
         evidence_blocks=evidence_blocks,
         system_prompt=system_prompt,
         total_token_count=system_tokens + used_tokens,
         query_text=query_text,
-        requester=requester,
-        as_of=as_of,
-        policy_version=policy_version,
-        context_compiler_version=context_compiler_version,
-        evidence_manifest=evidence_manifest,
-        snapshot_hash=snapshot_hash,
     )

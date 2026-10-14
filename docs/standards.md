@@ -3,9 +3,10 @@
 
 ## 1. Code Formatting
 
-### Frontend (apps/web)
-- **Prettier** with the root `.prettierrc.json` configuration.
-- Run: `npm run format:check` (CI) / `npm run format` (local)
+### Frontend and supported source files
+- **Prettier** with the root `.prettierrc.json` configuration for JavaScript,
+  TypeScript, CSS, JSON, YAML, and related source files.
+- Run: `make frontend-format-check` (CI) / `make frontend-format` (local)
 - No exceptions for formatting — the formatter is authoritative.
 
 ### Backend (services/api, services/worker)
@@ -13,11 +14,16 @@
 - Run: `uv run ruff format .` (local) / checked in CI.
 - Line length: 100 characters.
 
+At repository level, `make format` runs both formatters and `make format-check`
+runs both checks. Prettier uses the frontend package's pinned toolchain but
+formats supported source files across the repository; Ruff is the Python
+formatter and linter.
+
 ## 2. Linting
 
 ### Frontend
 - **ESLint** with Next.js recommended config.
-- Run: `npm run lint` (local) / checked in CI.
+- Run: `yarn lint` (local) / checked in CI.
 - `eslint-config-next` as base; no `any` types allowed; no unused variables.
 
 ### Backend
@@ -85,7 +91,7 @@ Exception: Third-party library API names (e.g., `color` in CSS/Tailwind) remain 
 
 ## 5. Package Managers
 - Python: `uv` exclusively. `pyproject.toml` + `uv.lock` committed.
-- Frontend: `npm` exclusively. `package-lock.json` committed.
+- Frontend: `yarn` exclusively (NOT npm). `yarn.lock` committed.
 - Never use `pip install` directly in CI; always `uv sync` first.
 
 ## 6. Dependency Rule

@@ -18,9 +18,9 @@ logger = get_logger(__name__)
 @celery_app.task(name="worker.tasks.reconcile.run_reconciliation")  # type: ignore[misc]
 def run_reconciliation(source: str | None = None) -> dict[str, Any]:
     """Run reconciliation for all source connections."""
-    import asyncio
+    from worker.async_runner import run_async
 
-    return asyncio.run(_run_reconciliation(source))
+    return run_async(_run_reconciliation(source))
 
 
 async def _run_reconciliation(source_filter: str | None = None) -> dict[str, Any]:
@@ -41,10 +41,14 @@ async def _run_reconciliation(source_filter: str | None = None) -> dict[str, Any
                 str(value)
                 for value in (
                     await session.scalars(
-                        select(SourceConnection.id).where(
-                            SourceConnection.status == "connected",
-                            *([SourceConnection.source == source_filter] if source_filter else []),
-                        )
+                    select(SourceConnection.id).where(
+                        SourceConnection.status == "connected",
+                        *(
+                            [SourceConnection.source == source_filter]
+                            if source_filter
+                            else []
+                        ),
+                    )
                     )
                 ).all()
             ]
@@ -80,6 +84,7 @@ async def _run_reconciliation(source_filter: str | None = None) -> dict[str, Any
                     "source": context.connection.source.value,
                     "externalObjectId": external_id,
                     "sourceRevision": change.get("source_revision"),
+                    "providerMetadata": change.get("provider_metadata", {}),
                 }
                 if change.get("change_type") in {"deleted", "removed"}:
                     process_deletion.delay(message)  # type: ignore[union-attr]

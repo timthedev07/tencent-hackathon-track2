@@ -31,7 +31,9 @@ async def append_event(
     # Serialise appends for a tenant.  A max(sequence_no) calculation without
     # a lock allows concurrent queries to produce duplicate sequence numbers
     # and divergent chain roots.
-    await session.execute(select(Tenant.id).where(Tenant.id == tenant_id).with_for_update())
+    await session.execute(
+        select(Tenant.id).where(Tenant.id == tenant_id).with_for_update()
+    )
 
     # Get the next sequence number
     stmt = select(func.max(AuditEvent.sequence_no)).where(AuditEvent.tenant_id == tenant_id)

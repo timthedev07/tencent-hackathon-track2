@@ -21,9 +21,9 @@ logger = get_logger(__name__)
 @celery_app.task(name="worker.tasks.embed.generate_embeddings")  # type: ignore[misc]
 def generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
     """Generate embeddings for chunks and activate the version."""
-    import asyncio
+    from worker.async_runner import run_async
 
-    return asyncio.run(_generate_embeddings(message))
+    return run_async(_generate_embeddings(message))
 
 
 async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
@@ -34,6 +34,7 @@ async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
     validate_message(message)
     tenant_id = _required(message, "tenantId")
     version_id = _required(message, "objectVersionId")
+    run_id = _optional_string(message, "backfillRunId")
     source = str(message.get("source", "unknown"))
     logger.info("Generating embeddings", source=source)
     factory = get_session_factory()
@@ -47,6 +48,9 @@ async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
             )
         )
         if version is None:
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="SOURCE_VERSION_MISSING"
+            )
             return {"status": "missing", "source": source}
         chunks = list(
             (
@@ -84,11 +88,17 @@ async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
             )
         except Exception:
             await _quarantine(tenant_id, version_id)
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="EMBEDDING_PROVIDER_FAILED"
+            )
             raise
         if len(generated) != len(missing) or any(
             len(vector) != settings.EMBEDDING_DIMENSION for vector in generated
         ):
             await _quarantine(tenant_id, version_id)
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="EMBEDDING_DIMENSION_MISMATCH"
+            )
             raise ValueError("EMBEDDING_DIMENSION_MISMATCH")
     embeddings = dict(reusable)
     embeddings.update(
@@ -105,6 +115,9 @@ async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
             )
         )
         if version is None:
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="SOURCE_VERSION_MISSING"
+            )
             return {"status": "missing", "source": source}
         chunks = list(
             (
@@ -123,6 +136,9 @@ async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
         if source_object is None or not chunks or any(chunk.embedding is None for chunk in chunks):
             version.ingestion_status = IngestionStatus.QUARANTINED.value
             await session.commit()
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="SOURCE_CHUNKS_MISSING"
+            )
             return {"status": "quarantined", "source": source}
         if source_object.current_version_id and source_object.current_version_id != version.id:
             previous = await session.scalar(
@@ -134,6 +150,7 @@ async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
                 version.valid_to = now
                 version.retired_at = now
                 await session.commit()
+                await _complete_run_item(tenant_id, run_id)
                 return {"status": "obsolete", "source": source}
         else:
             previous = None
@@ -149,6 +166,7 @@ async def _generate_embeddings(message: dict[str, Any]) -> dict[str, Any]:
         await session.commit()
         logger.info("Object version activated", source=source)
 
+    await _complete_run_item(tenant_id, run_id)
     return {"status": "embedded", "source": source}
 
 
@@ -157,6 +175,32 @@ def _required(message: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"INGESTION_MESSAGE_{key.upper()}_MISSING")
     return value
+
+
+def _optional_string(message: dict[str, Any], key: str) -> str | None:
+    value = message.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"INGESTION_MESSAGE_{key.upper()}_INVALID")
+    return value
+
+
+async def _complete_run_item(
+    tenant_id: str,
+    run_id: str | None,
+    *,
+    failed: bool = False,
+    failure_message: str | None = None,
+) -> None:
+    from worker.tasks.backfill_progress import complete_backfill_item
+
+    await complete_backfill_item(
+        tenant_id,
+        run_id,
+        failed=failed,
+        failure_message=failure_message,
+    )
 
 
 async def _quarantine(tenant_id: str, version_id: str) -> None:

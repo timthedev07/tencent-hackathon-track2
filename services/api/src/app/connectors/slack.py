@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from http import HTTPStatus
+from datetime import UTC, datetime
 
 from app.auth.oidc import AuthenticatedUser
 from app.connectors.errors import ConnectorError, ForbiddenError, PermanentError, RateLimitedError
@@ -24,6 +24,8 @@ from app.domain.types import (
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+_HTTP_UNAUTHORISED = 401
+_HTTP_TOO_MANY_REQUESTS = 429
 
 
 async def start_slack_oauth(user: AuthenticatedUser, oauth_state: str = "") -> str:
@@ -188,16 +190,18 @@ class SlackConnector:
         credential: DelegatedCredential | None = None,
     ) -> ScanPage:
         credential = _require_credential(credential)
+        params: dict[str, object] = {
+            "types": "public_channel,private_channel,mpim,im",
+            "limit": 200,
+            "exclude_archived": "true",
+        }
+        if cursor:
+            params["cursor"] = cursor
         response = await request(
             "GET",
             "https://slack.com/api/conversations.list",
             access_token=credential.access_token,
-            params={
-                "types": "public_channel,private_channel,mpim,im",
-                "limit": 200,
-                "cursor": cursor or "",
-                "exclude_archived": "true",
-            },
+            params=params,
         )
         payload = _slack_body(response)
         objects: list[dict[str, object]] = []
@@ -277,6 +281,7 @@ class SlackConnector:
             canonical_url=await _permalink(credential, channel_id, thread_ts),
             title=f"Slack thread {thread_ts}",
             content=strip_html("\n\n".join(text_parts)),
+            last_modified_at=_slack_timestamp(latest),
             provider_metadata={
                 "workspace_id": connection.external_workspace_id,
                 "channel_id": channel_id,
@@ -318,13 +323,13 @@ class SlackConnector:
             return AccessCheckResult(outcome=AccessOutcome.UNKNOWN, reason_code="provider_error")
 
         request_id = response.headers.get("x-slack-req-id")
-        if response.status_code == HTTPStatus.UNAUTHORIZED:
+        if response.status_code == _HTTP_UNAUTHORISED:
             return AccessCheckResult(
                 outcome=AccessOutcome.EXPIRED_CREDENTIAL,
                 reason_code="credential_expired",
                 provider_request_id=request_id,
             )
-        if response.status_code == HTTPStatus.TOO_MANY_REQUESTS:
+        if response.status_code == _HTTP_TOO_MANY_REQUESTS:
             return AccessCheckResult(
                 outcome=AccessOutcome.TIMEOUT,
                 reason_code="provider_rate_limited",
@@ -363,6 +368,13 @@ def _require_credential(credential: DelegatedCredential | None) -> DelegatedCred
     if credential is None or not credential.access_token:
         raise ValueError("SOURCE_CREDENTIAL_EXPIRED")
     return credential
+
+
+def _slack_timestamp(value: str) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(float(value), tz=UTC)
+    except (OverflowError, ValueError):
+        return None
 
 
 async def _slack_request(

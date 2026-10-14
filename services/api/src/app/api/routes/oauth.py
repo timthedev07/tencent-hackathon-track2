@@ -7,6 +7,9 @@ GET  /v1/oauth/slack/callback
 GET  /v1/oauth/google/start
 GET  /v1/oauth/google/callback
 GET  /v1/oauth/connections — list the current user's connected sources
+GET  /v1/oauth/connections/previews — show recent authorised imported items
+GET  /v1/oauth/connections/backfill-status — show current manual import progress
+POST /v1/oauth/connections/{provider}/backfill — queue a manual source import
 
 The OAuth flow works as follows:
 1. Frontend calls /start with a Bearer token → gets an authoriseUrl
@@ -19,24 +22,44 @@ The OAuth flow works as follows:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
-from sqlalchemy import select
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_authenticated_user
 from app.auth.identities import find_identity_link
 from app.auth.oauth_state import create_oauth_state, verify_oauth_state
 from app.auth.oidc import AuthenticatedUser
+from app.domain.source_connection_service import (
+    SourceConnectionNotFoundError,
+    SourceSyncUnavailableError,
+    queue_connection_sync,
+    restart_connection_sync,
+)
 from app.domain.types import Source
 from app.observability.logging import get_logger
-from app.persistence.models import SourceConnection
+from app.persistence.models import (
+    BackfillRun,
+    IdentityLink,
+    ObjectVersion,
+    SourceConnection,
+    SourceObject,
+)
 from app.persistence.session import get_session
 from app.settings import get_settings
 
 router = APIRouter()
 logger = get_logger(__name__)
+_PREVIEW_LIMIT = 3
+_PREVIEW_SNIPPET_LENGTH = 160
+_BACKFILL_QUEUE_TIMEOUT = timedelta(minutes=2)
+_BACKFILL_SCAN_TIMEOUT = timedelta(minutes=3)
+_BACKFILL_ACTIVITY_TIMEOUT = timedelta(minutes=15)
 
 
 class OAuthStartResponse(BaseModel):
@@ -47,10 +70,108 @@ class ConnectionStatus(BaseModel):
     source: str
     connected: bool
     display_name: str | None = None
+    connectionId: str | None = None
+    rootFolderIds: list[str] = Field(default_factory=list)
+    rootFolderLinks: list[str] = Field(default_factory=list)
 
 
 class ConnectionsResponse(BaseModel):
     connections: list[ConnectionStatus]
+
+
+class GoogleDriveScopeRequest(BaseModel):
+    rootFolderLinks: list[str] = Field(min_length=1)
+
+    @field_validator("rootFolderLinks")
+    @classmethod
+    def validate_root_folder_links(cls, value: list[str]) -> list[str]:
+        from app.settings import get_settings
+
+        cleaned = list(dict.fromkeys(item.strip() for item in value if item.strip()))
+        if not cleaned:
+            raise ValueError("At least one Google Drive root folder ID is required.")
+        if len(cleaned) > get_settings().GOOGLE_DRIVE_MAX_SCOPE_ROOTS:
+            raise ValueError(
+                "A maximum of "
+                f"{get_settings().GOOGLE_DRIVE_MAX_SCOPE_ROOTS} root folders is supported."
+            )
+        from app.connectors.google_drive import parse_folder_id
+
+        try:
+            [parse_folder_id(item) for item in cleaned]
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return cleaned
+
+    def root_folder_ids(self) -> list[str]:
+        from app.connectors.google_drive import parse_folder_id
+
+        return list(dict.fromkeys(parse_folder_id(item) for item in self.rootFolderLinks))
+
+
+class GoogleDriveScopeResponse(BaseModel):
+    connectionId: str
+    rootFolderIds: list[str]
+    rootFolderLinks: list[str]
+    syncRequired: bool = True
+
+
+class GoogleDriveFolderMetadata(BaseModel):
+    id: str
+    link: str
+    name: str | None = None
+
+
+class GoogleDriveFolderMetadataResponse(BaseModel):
+    folders: list[GoogleDriveFolderMetadata]
+
+
+class SyncConnectionResponse(BaseModel):
+    connectionId: str
+    runId: str
+    status: str
+
+
+class BackfillRunStatus(BaseModel):
+    id: str
+    source: str
+    status: str
+    discoveredCount: int
+    enqueuedCount: int
+    processedCount: int
+    failedCount: int
+    errorMessage: str | None = None
+    startedAt: str | None = None
+    completedAt: str | None = None
+
+
+class ManualBackfillResponse(BaseModel):
+    queuedSources: list[str]
+    message: str
+    runs: list[BackfillRunStatus]
+
+
+class BackfillStatusResponse(BaseModel):
+    runs: list[BackfillRunStatus]
+
+
+class BackfillPreviewItem(BaseModel):
+    source: str
+    title: str
+    url: str | None = None
+    updatedAt: str | None = None
+    snippet: str | None = None
+
+
+class AtlassianBackfillPreview(BaseModel):
+    pages: list[BackfillPreviewItem]
+    tickets: list[BackfillPreviewItem]
+
+
+class BackfillPreviewResponse(BaseModel):
+    atlassian: AtlassianBackfillPreview
+    slack: list[BackfillPreviewItem]
+    googleDrive: list[BackfillPreviewItem]
 
 
 # ── Connection status ────────────────────────────────────────────────
@@ -70,21 +191,503 @@ async def list_connections(
         link = await find_identity_link(session, user.user_id, source)
         display_name = None
         if link is not None:
-            stmt = select(SourceConnection).where(SourceConnection.id == link.source_connection_id)
+            stmt = select(SourceConnection).where(
+                SourceConnection.id == link.source_connection_id
+            )
             conn_result = await session.execute(stmt)
             conn = conn_result.scalar_one_or_none()
             if conn is not None:
                 display_name = conn.display_name
+                root_folder_ids = (
+                    conn.scope_config.get("allowed_root_folder_ids", [])
+                    if source == Source.GOOGLE_DRIVE
+                    else []
+                )
+            else:
+                root_folder_ids = []
+        else:
+            root_folder_ids = []
 
         result_list.append(
             ConnectionStatus(
                 source=source.value,
                 connected=link is not None,
                 display_name=display_name,
+                connectionId=str(link.source_connection_id) if link else None,
+                rootFolderIds=(
+                    [value for value in root_folder_ids if isinstance(value, str)]
+                    if isinstance(root_folder_ids, list)
+                    else []
+                ),
+                rootFolderLinks=(
+                    [
+                        f"https://drive.google.com/drive/folders/{value}"
+                        for value in root_folder_ids
+                        if isinstance(value, str)
+                    ]
+                    if isinstance(root_folder_ids, list)
+                    else []
+                ),
             )
         )
 
     return ConnectionsResponse(connections=result_list)
+
+
+@router.put(
+    "/connections/{connection_id}/google-drive-scope",
+    response_model=GoogleDriveScopeResponse,
+)
+async def configure_google_drive_scope(
+    connection_id: UUID,
+    request: GoogleDriveScopeRequest,
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> GoogleDriveScopeResponse:
+    """Set the allowed Google Drive root folders and fail closed old imports."""
+    statement = (
+        select(SourceConnection)
+        .join(IdentityLink, IdentityLink.source_connection_id == SourceConnection.id)
+        .where(
+            SourceConnection.id == connection_id,
+            SourceConnection.tenant_id == user.tenant_id,
+            SourceConnection.source == Source.GOOGLE_DRIVE.value,
+            SourceConnection.status == "connected",
+            IdentityLink.tenant_id == user.tenant_id,
+            IdentityLink.user_id == user.user_id,
+            IdentityLink.status == "verified",
+        )
+        .limit(1)
+    )
+    connection = await session.scalar(statement)
+    if connection is None:
+        raise _connection_error(
+            status.HTTP_404_NOT_FOUND,
+            "SOURCE_CONNECTION_NOT_FOUND",
+            "Google Drive connection not found.",
+        )
+
+    connection.scope_config = {
+        **(connection.scope_config or {}),
+        "allowed_root_folder_ids": request.root_folder_ids(),
+    }
+    # Existing objects were imported before this scope was set, or under an
+    # earlier scope. They remain auditable but cannot be queried until a sync
+    # reauthorises them through the scoped scanner.
+    await session.execute(
+        update(SourceObject)
+        .where(
+            SourceObject.tenant_id == user.tenant_id,
+            SourceObject.source_connection_id == connection_id,
+            SourceObject.source == Source.GOOGLE_DRIVE.value,
+        )
+        .values(is_queryable=False)
+    )
+    await session.commit()
+    return GoogleDriveScopeResponse(
+        connectionId=str(connection_id),
+        rootFolderIds=request.root_folder_ids(),
+        rootFolderLinks=request.rootFolderLinks,
+    )
+
+
+@router.get(
+    "/connections/{connection_id}/google-drive-folders",
+    response_model=GoogleDriveFolderMetadataResponse,
+)
+async def get_google_drive_folder_metadata(
+    connection_id: UUID,
+    folder_link: list[str] = Query(default_factory=list, alias="folderLink"),
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> GoogleDriveFolderMetadataResponse:
+    """Resolve visible names for folder links while keeping names optional."""
+    statement = (
+        select(SourceConnection)
+        .join(IdentityLink, IdentityLink.source_connection_id == SourceConnection.id)
+        .where(
+            SourceConnection.id == connection_id,
+            SourceConnection.tenant_id == user.tenant_id,
+            SourceConnection.source == Source.GOOGLE_DRIVE.value,
+            SourceConnection.status == "connected",
+            IdentityLink.tenant_id == user.tenant_id,
+            IdentityLink.user_id == user.user_id,
+            IdentityLink.status == "verified",
+        )
+        .limit(1)
+    )
+    connection = await session.scalar(statement)
+    if connection is None:
+        raise _connection_error(
+            status.HTTP_404_NOT_FOUND,
+            "SOURCE_CONNECTION_NOT_FOUND",
+            "Google Drive connection not found.",
+        )
+
+    from app.authorisation.live_check import _resolve_delegated_credential
+    from app.connectors.google_drive import GoogleDriveConnector, parse_folder_id
+
+    folder_entries: list[tuple[str, str]] = []
+    for value in folder_link[: get_settings().GOOGLE_DRIVE_MAX_SCOPE_ROOTS]:
+        try:
+            folder_id = parse_folder_id(value)
+        except ValueError:
+            continue
+        if not any(folder_id == item[0] for item in folder_entries):
+            folder_entries.append((folder_id, value))
+
+    names: dict[str, str] = {}
+    credential = await _resolve_delegated_credential(session, user, Source.GOOGLE_DRIVE)
+    folder_ids = [folder_id for folder_id, _link in folder_entries]
+    if credential is not None and folder_ids:
+        names = await GoogleDriveConnector().folder_names(folder_ids, credential)
+    return GoogleDriveFolderMetadataResponse(
+        folders=[
+            GoogleDriveFolderMetadata(
+                id=folder_id,
+                link=link,
+                name=names.get(folder_id),
+            )
+            for folder_id, link in folder_entries
+        ]
+    )
+
+
+@router.post(
+    "/connections/{connection_id}/sync",
+    response_model=SyncConnectionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def sync_connection(
+    connection_id: UUID,
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> SyncConnectionResponse:
+    """Queue ingestion for one exact delegated-OAuth connection."""
+    try:
+        result = await queue_connection_sync(session, user, connection_id)
+    except SourceConnectionNotFoundError as exc:
+        raise _connection_error(
+            status.HTTP_404_NOT_FOUND,
+            "SOURCE_CONNECTION_NOT_FOUND",
+            "Source connection not found.",
+        ) from exc
+    except SourceSyncUnavailableError as exc:
+        raise _connection_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "SOURCE_SYNC_FAILED",
+            "The source sync could not be queued. Please try again.",
+        ) from exc
+    return SyncConnectionResponse(**result)
+
+
+@router.post(
+    "/connections/{connection_id}/restart",
+    response_model=SyncConnectionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def restart_connection(
+    connection_id: UUID,
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> SyncConnectionResponse:
+    """Mark an active import as stopped and queue a fresh import."""
+    try:
+        result = await restart_connection_sync(session, user, connection_id)
+    except SourceConnectionNotFoundError as exc:
+        raise _connection_error(
+            status.HTTP_404_NOT_FOUND,
+            "SOURCE_CONNECTION_NOT_FOUND",
+            "Source connection not found.",
+        ) from exc
+    except SourceSyncUnavailableError as exc:
+        raise _connection_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "SOURCE_SYNC_FAILED",
+            "The source sync could not be restarted. Please try again.",
+        ) from exc
+    return SyncConnectionResponse(**result)
+
+
+@router.get("/connections/previews", response_model=BackfillPreviewResponse)
+async def get_backfill_previews(
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> BackfillPreviewResponse:
+    """Return recent imported items after fresh provider authorisation checks."""
+    pages = await _authorised_preview_items(session, user, Source.CONFLUENCE, "page")
+    tickets = await _authorised_preview_items(session, user, Source.JIRA, "issue")
+    slack = await _authorised_preview_items(session, user, Source.SLACK, "message")
+    drive = await _authorised_preview_items(session, user, Source.GOOGLE_DRIVE)
+    return BackfillPreviewResponse(
+        atlassian=AtlassianBackfillPreview(pages=pages, tickets=tickets),
+        slack=slack,
+        googleDrive=drive,
+    )
+
+
+@router.get("/connections/backfill-status", response_model=BackfillStatusResponse)
+async def get_backfill_status(
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> BackfillStatusResponse:
+    """Return each authorised source's latest import requested by this user."""
+    rows = await session.execute(
+        select(BackfillRun, SourceConnection.source)
+        .join(SourceConnection, SourceConnection.id == BackfillRun.source_connection_id)
+        .join(IdentityLink, IdentityLink.source_connection_id == SourceConnection.id)
+        .where(
+            BackfillRun.tenant_id == user.tenant_id,
+            BackfillRun.requested_by_user_id == user.user_id,
+            IdentityLink.user_id == user.user_id,
+            IdentityLink.status == "verified",
+        )
+        .order_by(BackfillRun.created_at.desc())
+    )
+    latest: dict[str, BackfillRunStatus] = {}
+    now = datetime.now(UTC)
+    stale_runs: list[BackfillRun] = []
+    for run, source in rows.all():
+        stale_message: str | None = None
+        if (
+            run.status == "queued"
+            and run.created_at is not None
+            and now - run.created_at > _BACKFILL_QUEUE_TIMEOUT
+        ):
+            stale_message = "The import worker did not start. Please retry."
+        elif (
+            run.status == "scanning"
+            and run.updated_at is not None
+            and now - run.updated_at > _BACKFILL_SCAN_TIMEOUT
+        ):
+            stale_message = "The import worker stopped while scanning. Please retry."
+        elif (
+            run.status == "processing"
+            and run.updated_at is not None
+            and now - run.updated_at > _BACKFILL_ACTIVITY_TIMEOUT
+        ):
+            stale_message = "The import worker stopped before completing. Please retry."
+        if stale_message is not None:
+            run.status = "failed"
+            run.error_message = stale_message
+            run.completed_at = now
+            stale_runs.append(run)
+        source_value = str(source)
+        if source_value in latest:
+            continue
+        latest[source_value] = _backfill_run_status(run, source_value)
+    if stale_runs:
+        await session.commit()
+    return BackfillStatusResponse(runs=list(latest.values()))
+
+
+@router.post(
+    "/connections/{provider}/backfill",
+    response_model=ManualBackfillResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def trigger_manual_backfill(
+    provider: str,
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> ManualBackfillResponse:
+    """Queue an operator-requested import using the caller's delegated identity."""
+    provider_sources = {
+        "atlassian": (Source.CONFLUENCE, Source.JIRA),
+        "slack": (Source.SLACK,),
+        "google_drive": (Source.GOOGLE_DRIVE,),
+    }
+    sources = provider_sources.get(provider)
+    if sources is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "SOURCE_NOT_FOUND", "message": "Source not found."}},
+        )
+
+    rows = await session.execute(
+        select(SourceConnection)
+        .join(IdentityLink, IdentityLink.source_connection_id == SourceConnection.id)
+        .where(
+            SourceConnection.tenant_id == user.tenant_id,
+            SourceConnection.status == "connected",
+            SourceConnection.source.in_([source.value for source in sources]),
+            IdentityLink.user_id == user.user_id,
+            IdentityLink.status == "verified",
+        )
+        .order_by(SourceConnection.source)
+    )
+    connections = list(rows.scalars().unique())
+    if not connections:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": {
+                    "code": "SOURCE_NOT_CONNECTED",
+                    "message": "Reconnect this source before starting an import.",
+                }
+            },
+        )
+
+    runs = [
+        BackfillRun(
+            tenant_id=user.tenant_id,
+            source_connection_id=connection.id,
+            requested_by_user_id=user.user_id,
+        )
+        for connection in connections
+    ]
+    session.add_all(runs)
+    await session.commit()
+
+    from worker.tasks.backfill import run_backfill
+
+    try:
+        for connection, run in zip(connections, runs, strict=True):
+            run_backfill.delay(  # type: ignore[union-attr]
+                str(connection.id), str(user.tenant_id), str(user.user_id), str(run.id)
+            )
+    except Exception as exc:
+        logger.exception("Manual backfill could not be queued", provider=provider)
+        for run in runs:
+            run.status = "failed"
+            run.error_message = "The import worker is unavailable. Try again shortly."
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": {
+                    "code": "BACKFILL_UNAVAILABLE",
+                    "message": "The import worker is unavailable. Try again shortly.",
+                }
+            },
+        ) from exc
+
+    queued_sources = [str(connection.source) for connection in connections]
+    return ManualBackfillResponse(
+        queuedSources=queued_sources,
+        message="Import queued. Progress will update here while Relay indexes the source.",
+        runs=[
+            _backfill_run_status(run, str(connection.source))
+            for connection, run in zip(connections, runs, strict=True)
+        ],
+    )
+
+
+def _backfill_run_status(run: BackfillRun, source: str) -> BackfillRunStatus:
+    run_status = run.status
+    if run_status == "completed" and run.failed_count:
+        run_status = "completed_with_errors"
+    return BackfillRunStatus(
+        id=str(run.id),
+        source=source,
+        status=run_status,
+        discoveredCount=run.discovered_count,
+        enqueuedCount=run.enqueued_count,
+        processedCount=run.processed_count,
+        failedCount=run.failed_count,
+        errorMessage=_friendly_backfill_error(run.error_message, source),
+        startedAt=run.started_at.isoformat() if run.started_at else None,
+        completedAt=run.completed_at.isoformat() if run.completed_at else None,
+    )
+
+
+def _friendly_backfill_error(value: str | None, source: str) -> str | None:
+    if value == "SOURCE_CREDENTIAL_EXPIRED":
+        return "Authorisation expired. Reconnect this source, then sync again."
+    if value == "forbidden: Provider credential rejected" and source == "confluence":
+        return (
+            "Atlassian rejected this grant. Enable read:page:confluence in the app, "
+            "reconnect Atlassian, then sync again."
+        )
+    if value == "forbidden: Provider credential rejected" and source == "jira":
+        return "Atlassian rejected this grant. Reconnect Atlassian, then sync again."
+    return value
+
+
+async def _authorised_preview_items(
+    session: AsyncSession,
+    user: AuthenticatedUser,
+    source: Source,
+    object_type: str | None = None,
+) -> list[BackfillPreviewItem]:
+    """Load recent metadata and reveal it only after a live access check."""
+    conditions = [
+        SourceObject.tenant_id == user.tenant_id,
+        SourceObject.source == source.value,
+        SourceObject.is_queryable.is_(True),
+        SourceObject.is_deleted.is_(False),
+        SourceObject.current_version_id == ObjectVersion.id,
+        ObjectVersion.ingestion_status == "active",
+        ObjectVersion.retired_at.is_(None),
+    ]
+    if object_type is not None:
+        conditions.append(SourceObject.object_type == object_type)
+    if source == Source.GOOGLE_DRIVE:
+        conditions.append(SourceObject.object_type != "application/vnd.google-apps.folder")
+
+    rows = (
+        await session.execute(
+            select(
+                SourceObject.id,
+                SourceObject.canonical_url,
+                ObjectVersion.normalised_title,
+                ObjectVersion.normalised_content,
+                ObjectVersion.valid_from,
+                ObjectVersion.observed_at,
+            )
+            .join(ObjectVersion, SourceObject.current_version_id == ObjectVersion.id)
+            .where(*conditions)
+            .order_by(func.coalesce(ObjectVersion.valid_from, ObjectVersion.observed_at).desc())
+            .limit(_PREVIEW_LIMIT)
+        )
+    ).all()
+    if not rows:
+        return []
+
+    from app.authorisation.live_check import check_live_access_batch
+
+    decisions = await check_live_access_batch(
+        session,
+        user,
+        [(row.id, source) for row in rows],
+    )
+    items: list[BackfillPreviewItem] = []
+    for row in rows:
+        decision = decisions.get(row.id)
+        if decision is None or decision.outcome.value != "allow":
+            continue
+        title = row.normalised_title or _preview_title(source, row.normalised_content)
+        updated_at = row.valid_from or row.observed_at
+        items.append(
+            BackfillPreviewItem(
+                source=source.value,
+                title=title,
+                url=row.canonical_url,
+                updatedAt=updated_at.isoformat() if updated_at else None,
+                snippet=(
+                    _preview_snippet(row.normalised_content)
+                    if source == Source.SLACK
+                    else None
+                ),
+            )
+        )
+        if len(items) == _PREVIEW_LIMIT:
+            break
+    return items
+
+
+def _preview_title(source: Source, content: str) -> str:
+    if source == Source.SLACK:
+        return "Slack message"
+    preview = _preview_snippet(content)
+    return preview or "Untitled item"
+
+
+def _preview_snippet(content: str) -> str:
+    compact = " ".join(content.split())
+    if len(compact) <= _PREVIEW_SNIPPET_LENGTH:
+        return compact
+    return f"{compact[:_PREVIEW_SNIPPET_LENGTH - 3].rstrip()}…"
 
 
 # ── Atlassian ────────────────────────────────────────────────────────
@@ -114,6 +717,33 @@ async def atlassian_callback(
     user = await _resolve_user_from_state(state)
     try:
         await complete_atlassian_oauth(code, state, user)
+    except ValueError as exc:
+        error_messages = {
+            "ATLASSIAN_IDENTITY_UNAVAILABLE": (
+                "Atlassian identity could not be verified. Enable the User Identity API "
+                "and read:me, then reconnect."
+            ),
+            "ATLASSIAN_RESOURCES_EMPTY": (
+                "No Atlassian site was granted to Relay. Check the app permissions, then reconnect."
+            ),
+            "ATLASSIAN_RESOURCES_UNAVAILABLE": (
+                "Atlassian sites could not be verified. Please try connecting again."
+            ),
+            "SOURCE_CREDENTIAL_EXPIRED": (
+                "The Atlassian authorisation expired while connecting. Please try again."
+            ),
+            "IDENTITY_LINK_ALREADY_CLAIMED": (
+                "This Atlassian account is already linked to another Relay user."
+            ),
+            "IDENTITY_LINK_SUBJECT_MISMATCH": (
+                "This Relay user already has a different Atlassian identity linked."
+            ),
+        }
+        error_code = str(exc)
+        logger.warning("Atlassian OAuth callback failed", error=error_code)
+        return _redirect_to_settings(
+            "error", "atlassian", error_messages.get(error_code, "OAuth connection failed")
+        )
     except Exception as exc:
         logger.warning("Atlassian OAuth callback failed", error=str(exc))
         return _redirect_to_settings("error", "atlassian", "OAuth connection failed")
@@ -182,6 +812,24 @@ async def google_callback(
     user = await _resolve_user_from_state(state)
     try:
         await complete_google_oauth(code, state, user)
+    except ValueError as exc:
+        error_messages = {
+            "GOOGLE_IDENTITY_UNAVAILABLE": (
+                "Google identity could not be verified. Please grant the requested "
+                "identity permissions and reconnect."
+            ),
+            "IDENTITY_LINK_ALREADY_CLAIMED": (
+                "This Google account is already linked to another Relay user."
+            ),
+            "IDENTITY_LINK_SUBJECT_MISMATCH": (
+                "This Relay user already has a different Google identity linked."
+            ),
+        }
+        error_code = str(exc)
+        logger.warning("Google OAuth callback failed", error=error_code)
+        return _redirect_to_settings(
+            "error", "google", error_messages.get(error_code, "OAuth connection failed")
+        )
     except Exception as exc:
         logger.warning("Google OAuth callback failed", error=str(exc))
         return _redirect_to_settings("error", "google", "OAuth connection failed")
@@ -190,6 +838,13 @@ async def google_callback(
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _connection_error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"error": {"code": code, "message": message}},
+    )
 
 
 async def _resolve_user_from_state(state: str) -> AuthenticatedUser:
@@ -214,9 +869,9 @@ async def _resolve_user_from_state(state: str) -> AuthenticatedUser:
         await set_tenant_context(session, tenant_id)
         row = (
             await session.execute(
-                select(User, Tenant)
-                .join(Tenant, User.tenant_id == Tenant.id)
-                .where(User.id == user_id, User.tenant_id == tenant_id)
+                select(User, Tenant).join(Tenant, User.tenant_id == Tenant.id).where(
+                    User.id == user_id, User.tenant_id == tenant_id
+                )
             )
         ).first()
         if row is None:
@@ -244,6 +899,5 @@ def _redirect_to_settings(
     params = f"?status={status_val}&source={source}"
     if error:
         import urllib.parse
-
         params += f"&error={urllib.parse.quote(error)}"
     return RedirectResponse(url=f"{base}/settings{params}")

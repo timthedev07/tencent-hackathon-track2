@@ -1,13 +1,13 @@
-import { afterEach, expect, test, vi } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest';
 
-import { ApiClientError, createQuery } from './client'
+import { ApiClientError, createQuery } from './client';
 
 afterEach(() => {
-  vi.unstubAllGlobals()
-})
+  vi.unstubAllGlobals();
+});
 
 test('surfaces the error message from a FastAPI detail response', async () => {
-  vi.stubGlobal('window', { localStorage: { getItem: () => null } })
+  vi.stubGlobal('window', { localStorage: { getItem: () => null } });
   vi.stubGlobal(
     'fetch',
     vi.fn().mockResolvedValue(
@@ -23,9 +23,9 @@ test('surfaces the error message from a FastAPI detail response', async () => {
         { status: 401, headers: { 'Content-Type': 'application/json' } },
       ),
     ),
-  )
+  );
 
   await expect(createQuery('hello')).rejects.toEqual(
     new ApiClientError('AUTH_INVALID_TOKEN', 'Authentication required.', 401),
-  )
-})
+  );
+});

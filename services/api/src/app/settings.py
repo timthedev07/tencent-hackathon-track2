@@ -23,11 +23,11 @@ class Settings(BaseSettings):
     APP_BASE_URL: str = "http://localhost:8000"
     WEB_BASE_URL: str = "http://localhost:3000"
     CORS_ALLOWED_ORIGINS: str = "http://localhost:3000"
-    SQL_ECHO: bool = False
 
     # ── Datastores ─────────────────────────────────────────────────
     DATABASE_URL: str = "postgresql+asyncpg://assistant:assistant@localhost:5432/assistant"
-    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_URL: str = "redis://localhost:6382/0"
+    SQL_ECHO: bool = False
     OTEL_EXPORTER_OTLP_ENDPOINT: str = ""
     SERVICE_NAME: str = "enterprise-assistant-api"
     LOG_LEVEL: str = "INFO"
@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = ""
+    GOOGLE_DRIVE_MAX_SCOPE_ROOTS: int = 20
 
     # ── Models ─────────────────────────────────────────────────────
     MODEL_PROVIDER: str = "openai"
@@ -77,7 +78,7 @@ class Settings(BaseSettings):
 
     # ── Query deadlines / intervals ────────────────────────────────
     QUERY_AUTH_DEADLINE_MS: int = 1500
-    QUERY_GENERATION_DEADLINE_MS: int = 6000
+    QUERY_GENERATION_DEADLINE_MS: int = 30000
     RECONCILIATION_INTERVAL_MINUTES: int = 15
 
     # ── Encryption ──────────────────────────────────────────────────

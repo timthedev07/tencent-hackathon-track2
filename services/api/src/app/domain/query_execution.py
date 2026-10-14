@@ -47,10 +47,7 @@ async def _locked_query_run(
 ) -> QueryRun | None:
     return await session.scalar(
         select(QueryRun)
-        .where(
-            QueryRun.id == query_id,
-            QueryRun.tenant_id == tenant_id,
-        )
+        .where(QueryRun.id == query_id, QueryRun.tenant_id == tenant_id)
         .with_for_update()
     )
 
@@ -63,11 +60,14 @@ async def append_query_event(
     payload: dict[str, Any] | None = None,
     *,
     status: str | None = None,
-) -> QueryEvent:
-    """Append one event while locking its query row to serialize sequence numbers."""
+    force: bool = False,
+) -> QueryEvent | None:
+    """Append an event while serialising sequence numbers on the query row."""
     run = await _locked_query_run(session, tenant_id, query_id)
     if run is None:
         raise ValueError(f"Query run {query_id} not found")
+    if status is not None and not force and run.status == status:
+        return None
     if status is not None:
         run.status = status
 
@@ -95,7 +95,7 @@ async def record_query_stage(
     message: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    """Persist a real pipeline transition before the corresponding work begins."""
+    """Persist a pipeline transition before the corresponding work begins."""
     factory = get_session_factory()
     async with factory() as session:
         await set_tenant_context(session, tenant_id)
@@ -116,7 +116,7 @@ async def acquire_query_lease(
     *,
     lease_seconds: int = QUERY_LEASE_SECONDS,
 ) -> LeaseResult:
-    """Acquire a renewable-by-retry lease; only one worker can execute a query."""
+    """Acquire a lease so duplicate worker deliveries cannot execute together."""
     factory = get_session_factory()
     async with factory() as session:
         await set_tenant_context(session, tenant_id)
@@ -160,7 +160,7 @@ async def fail_query_execution(
     error_code: str,
     message: str,
 ) -> None:
-    """Persist a terminal failure and event without exposing exception details."""
+    """Persist a terminal failure without exposing exception details."""
     factory = get_session_factory()
     async with factory() as session:
         await set_tenant_context(session, tenant_id)
@@ -178,5 +178,6 @@ async def fail_query_execution(
             "query.failed",
             {"message": message, "errorCode": error_code},
             status=QueryStatus.FAILED.value,
+            force=True,
         )
         await session.commit()

@@ -25,9 +25,9 @@ logger = get_logger(__name__)
 )
 def resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
     """Resolve ACL grants for an object and enqueue chunking."""
-    import asyncio
+    from worker.async_runner import run_async
 
-    return asyncio.run(_resolve_acl(message))
+    return run_async(_resolve_acl(message))
 
 
 async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
@@ -44,9 +44,17 @@ async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
     connection_id = _required(message, "connectionId")
     object_id = _required(message, "externalObjectId")
     version_id = _required(message, "objectVersionId")
+    user_id = _optional_string(message, "userId")
+    run_id = _optional_string(message, "backfillRunId")
     source = str(message.get("source", "unknown"))
     logger.info("Resolving ACL", source=source)
-    context = await load_ingestion_context(tenant_id, connection_id)
+    try:
+        context = await load_ingestion_context(tenant_id, connection_id, user_id)
+    except ValueError as exc:
+        logger.warning("Could not load ACL ingestion context", source=source, error=str(exc))
+        await _quarantine(tenant_id, version_id)
+        await _complete_run_item(tenant_id, run_id, failed=True, failure_message=str(exc))
+        return {"status": "failed", "source": source}
     try:
         result = await connector_for(context.connection.source).fetch_acl(
             context.connection,
@@ -57,9 +65,16 @@ async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
         if exc.outcome in {ConnectorOutcome.RATE_LIMITED, ConnectorOutcome.TRANSIENT_ERROR}:
             raise
         await _quarantine(tenant_id, version_id)
+        await _complete_run_item(tenant_id, run_id, failed=True, failure_message=str(exc))
         return {"status": "quarantined", "source": source}
     if result.outcome != ConnectorOutcome.SUCCESS:
         await _quarantine(tenant_id, version_id)
+        await _complete_run_item(
+            tenant_id,
+            run_id,
+            failed=True,
+            failure_message=f"ACL_{result.outcome.value.upper()}",
+        )
         return {"status": "quarantined", "source": source}
 
     factory = get_session_factory()
@@ -72,6 +87,9 @@ async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
             )
         )
         if version is None:
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="SOURCE_VERSION_MISSING"
+            )
             return {"status": "missing", "source": source}
         source_object = await session.scalar(
             select(SourceObject).where(
@@ -80,6 +98,9 @@ async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
             )
         )
         if source_object is None:
+            await _complete_run_item(
+                tenant_id, run_id, failed=True, failure_message="SOURCE_OBJECT_MISSING"
+            )
             return {"status": "missing", "source": source}
         await session.execute(delete(AclGrant).where(AclGrant.source_object_id == source_object.id))
         revision = str(message.get("sourceRevision") or version.source_revision)
@@ -102,7 +123,9 @@ async def _resolve_acl(message: dict[str, Any]) -> dict[str, Any]:
                     principal_type=principal_type,
                     provider_principal_id=str(provider_id),
                     display_name=(
-                        str(grant["display_name"]) if grant.get("display_name") else None
+                        str(grant["display_name"])
+                        if grant.get("display_name")
+                        else None
                     ),
                 )
                 session.add(principal)
@@ -138,6 +161,15 @@ def _required(message: dict[str, Any], key: str) -> str:
     return value
 
 
+def _optional_string(message: dict[str, Any], key: str) -> str | None:
+    value = message.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"INGESTION_MESSAGE_{key.upper()}_INVALID")
+    return value
+
+
 async def _quarantine(tenant_id: str, version_id: str) -> None:
     from uuid import UUID
 
@@ -155,6 +187,28 @@ async def _quarantine(tenant_id: str, version_id: str) -> None:
             source_object = await session.scalar(
                 select(SourceObject).where(SourceObject.id == version.source_object_id)
             )
-            if source_object is not None:
+            # Keep a previously active version searchable while a newer
+            # version is being quarantined.  Otherwise a transient ACL
+            # failure on the update would hide known-good content.
+            if source_object is not None and (
+                source_object.current_version_id in {None, version.id}
+            ):
                 source_object.is_queryable = False
             await session.commit()
+
+
+async def _complete_run_item(
+    tenant_id: str,
+    run_id: str | None,
+    *,
+    failed: bool = False,
+    failure_message: str | None = None,
+) -> None:
+    from worker.tasks.backfill_progress import complete_backfill_item
+
+    await complete_backfill_item(
+        tenant_id,
+        run_id,
+        failed=failed,
+        failure_message=failure_message,
+    )

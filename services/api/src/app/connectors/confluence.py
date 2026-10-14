@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 
 from app.auth.oidc import AuthenticatedUser
+from app.connectors.errors import ForbiddenError, NotFoundError
 from app.connectors.http import json_body, request
 from app.connectors.parsing import next_cursor, object_list, strip_html
 from app.domain.types import (
@@ -23,6 +24,47 @@ from app.domain.types import (
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+_ATLASSIAN_OAUTH_SCOPES = (
+    "read:page:confluence read:confluence-content.read read:confluence-content.all "
+    "read:confluence-space.summary read:jira-work read:me offline_access"
+)
+
+
+async def get_atlassian_accessible_resources(access_token: str) -> list[dict[str, object]]:
+    """Return the Atlassian sites available to an OAuth access token."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api.atlassian.com/oauth/token/accessible-resources",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                },
+                timeout=10.0,
+            )
+    except httpx.HTTPError as exc:
+        raise ValueError("ATLASSIAN_RESOURCES_UNAVAILABLE") from exc
+
+    if response.status_code == HTTPStatus.UNAUTHORIZED:
+        raise ValueError("SOURCE_CREDENTIAL_EXPIRED")
+    if response.status_code != HTTPStatus.OK:
+        raise ValueError("ATLASSIAN_RESOURCES_UNAVAILABLE")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError("ATLASSIAN_RESOURCES_UNAVAILABLE") from exc
+    if not isinstance(payload, list):
+        raise ValueError("ATLASSIAN_RESOURCES_UNAVAILABLE")  # noqa: TRY004
+    resources = [
+        item for item in payload
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]
+    ]
+    if not resources:
+        raise ValueError("ATLASSIAN_RESOURCES_EMPTY")
+    return resources
 
 
 async def start_atlassian_oauth(user: AuthenticatedUser, oauth_state: str = "") -> str:
@@ -43,10 +85,7 @@ async def start_atlassian_oauth(user: AuthenticatedUser, oauth_state: str = "") 
         {
             "audience": "api.atlassian.com",
             "client_id": settings.ATLASSIAN_CLIENT_ID,
-            "scope": (
-                "read:confluence-content.read read:confluence-content.all "
-                "read:confluence-space.summary read:jira-work"
-            ),
+            "scope": _ATLASSIAN_OAUTH_SCOPES,
             "redirect_uri": settings.ATLASSIAN_REDIRECT_URI,
             "state": state_val,
             "response_type": "code",
@@ -92,7 +131,7 @@ async def complete_atlassian_oauth(code: str, state: str, user: AuthenticatedUse
         return
 
     # Determine provider subject and cloud id from Atlassian APIs.
-    provider_subject = "atlassian-user"
+    provider_subject: str | None = None
     workspace_id = "atlassian-workspace"
     workspace_name = "Atlassian"
     try:
@@ -104,18 +143,19 @@ async def complete_atlassian_oauth(code: str, state: str, user: AuthenticatedUse
             )
             if me_res.status_code == HTTPStatus.OK:
                 me_data = me_res.json()
-                provider_subject = str(me_data.get("account_id", provider_subject))
-            resources_res = await client.get(
-                "https://api.atlassian.com/oauth/token/accessible-resources",
-                headers={"Authorization": f"Bearer {access_token}"},
-                timeout=10.0,
-            )
-            if resources_res.status_code == HTTPStatus.OK and resources_res.json():
-                resource = resources_res.json()[0]
-                workspace_id = str(resource.get("id", workspace_id))
-                workspace_name = str(resource.get("name", workspace_name))
+                account_id = me_data.get("account_id")
+                if account_id:
+                    provider_subject = str(account_id)
     except Exception:
         logger.debug("Could not fetch Atlassian account/resource metadata", exc_info=True)
+
+    resources = await get_atlassian_accessible_resources(access_token)
+    resource = resources[0]
+    workspace_id = str(resource["id"])
+    workspace_name = str(resource.get("name") or workspace_name)
+
+    if not provider_subject:
+        raise ValueError("ATLASSIAN_IDENTITY_UNAVAILABLE")
 
     cm = get_credential_manager()
     expires_at = None
@@ -200,7 +240,9 @@ class ConfluenceConnector:
         cloud_id = _cloud_id(connection, credential)
         url = _page_url(cloud_id, cursor)
         params = (
-            None if cursor and cursor.startswith("http") else {"limit": 100, "status": "current"}
+            None
+            if cursor and cursor.startswith("http")
+            else {"limit": 100, "status": "current"}
         )
         response = await request(
             "GET",
@@ -240,11 +282,11 @@ class ConfluenceConnector:
             params={"body-format": "storage"},
         )
         payload = json_body(response)
-        version = _mapping(payload.get("version"))
-        body = _mapping(payload.get("body"))
-        storage = _mapping(body.get("storage"))
+        version = payload.get("version") if isinstance(payload.get("version"), dict) else {}
+        body = payload.get("body") if isinstance(payload.get("body"), dict) else {}
+        storage = body.get("storage") if isinstance(body.get("storage"), dict) else {}
         content = strip_html(str(storage.get("value") or ""))
-        links = _mapping(payload.get("_links"))
+        links = payload.get("_links") if isinstance(payload.get("_links"), dict) else {}
         canonical_url = links.get("webui")
         if canonical_url and links.get("base"):
             canonical_url = f"{links['base']}{canonical_url}"
@@ -258,7 +300,7 @@ class ConfluenceConnector:
             canonical_url=str(canonical_url) if canonical_url else None,
             title=str(payload.get("title")) if payload.get("title") else None,
             content=content,
-            last_modified_at=_parse_datetime(version.get("createdAt")),
+            last_modified_at=version.get("createdAt"),
             provider_metadata={
                 "space_id": payload.get("spaceId"),
                 "ancestor_ids": _ancestor_ids(payload.get("ancestors")),
@@ -273,12 +315,24 @@ class ConfluenceConnector:
     ) -> FetchAclResult:
         credential = _require_credential(credential)
         cloud_id = _cloud_id(connection, credential)
-        response = await request(
-            "GET",
-            f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki/rest/api/content/{external_object_id}/restriction",
-            access_token=credential.access_token,
-            params={"expand": "restrictions.user,restrictions.group", "limit": 100},
-        )
+        try:
+            response = await request(
+                "GET",
+                f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki/rest/api/content/{external_object_id}/restriction",
+                access_token=credential.access_token,
+                params={"expand": "restrictions.user,restrictions.group", "limit": 100},
+            )
+        except (ForbiddenError, NotFoundError) as exc:
+            # ACL projection is an optimisation. Query-time live access remains
+            # authoritative, so an ACL endpoint that cannot describe a page
+            # must not discard content that was fetched with the delegated
+            # credential. An absent page will be denied by the live check.
+            logger.warning(
+                "Confluence ACL projection unavailable; continuing without local grants",
+                external_object_id=external_object_id,
+                outcome=exc.outcome.value,
+            )
+            return FetchAclResult(outcome=ConnectorOutcome.SUCCESS, grants=[])
         payload = json_body(response)
         grants: list[dict[str, object]] = []
         operation_results = object_list(payload.get("results"))
@@ -328,7 +382,6 @@ class ConfluenceConnector:
                 response = await client.get(
                     f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki/api/v2/pages/{external_object_id}",
                     headers={"Authorization": f"Bearer {user_credential.access_token}"},
-                    params={"body-format": "none"},
                 )
         except httpx.TimeoutException:
             return AccessCheckResult(outcome=AccessOutcome.TIMEOUT, reason_code="provider_timeout")
@@ -348,7 +401,7 @@ class ConfluenceConnector:
                 reason_code="credential_expired",
                 provider_request_id=request_id,
             )
-        if response.status_code in {HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND}:
+        if response.status_code in {403, 404}:
             return AccessCheckResult(
                 outcome=AccessOutcome.DENY,
                 reason_code="object_not_found_or_forbidden",
@@ -387,8 +440,8 @@ def _page_url(cloud_id: str, cursor: str | None) -> str:
 
 
 def _scan_object(item: dict[str, object]) -> dict[str, object]:
-    version = _mapping(item.get("version"))
-    links = _mapping(item.get("_links"))
+    version = item.get("version") if isinstance(item.get("version"), dict) else {}
+    links = item.get("_links") if isinstance(item.get("_links"), dict) else {}
     canonical_url = links.get("webui")
     if canonical_url and links.get("base"):
         canonical_url = f"{links['base']}{canonical_url}"
@@ -398,25 +451,14 @@ def _scan_object(item: dict[str, object]) -> dict[str, object]:
         "parent_external_id": str(item.get("parentId")) if item.get("parentId") else None,
         "canonical_url": str(canonical_url) if canonical_url else None,
         "title": str(item.get("title")) if item.get("title") else None,
-        "source_revision": str(version.get("number") or version.get("createdAt") or item.get("id")),
+        "source_revision": str(
+            version.get("number") or version.get("createdAt") or item.get("id")
+        ),
         "provider_metadata": {
             "space_id": item.get("spaceId"),
             "ancestor_ids": _ancestor_ids(item.get("ancestors")),
         },
     }
-
-
-def _mapping(value: object) -> dict[str, object]:
-    return value if isinstance(value, dict) else {}
-
-
-def _parse_datetime(value: object) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _ancestor_ids(value: object) -> list[str]:

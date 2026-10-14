@@ -23,15 +23,7 @@ from app.connectors.errors import (
 )
 
 _MAX_ATTEMPTS = 3
-_RETRYABLE_STATUS_CODES = {
-    HTTPStatus.REQUEST_TIMEOUT,
-    HTTPStatus.TOO_EARLY,
-    HTTPStatus.TOO_MANY_REQUESTS,
-    HTTPStatus.INTERNAL_SERVER_ERROR,
-    HTTPStatus.BAD_GATEWAY,
-    HTTPStatus.SERVICE_UNAVAILABLE,
-    HTTPStatus.GATEWAY_TIMEOUT,
-}
+_RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 
 async def request(
@@ -44,7 +36,10 @@ async def request(
     timeout: float = 15.0,  # noqa: ASYNC109
 ) -> httpx.Response:
     """Make a bounded provider request and classify transport failures."""
-    headers = {"Authorization": f"Bearer {access_token}"}
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+    }
     for attempt in range(_MAX_ATTEMPTS):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:

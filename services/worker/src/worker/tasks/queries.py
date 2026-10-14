@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from uuid import UUID
 
@@ -14,44 +13,24 @@ from app.domain.query_execution import (
     release_query_lease,
 )
 from app.persistence.models import QueryRun, User
-from app.persistence.session import dispose_engine, get_session_factory, set_tenant_context
+from app.persistence.session import get_session_factory, set_tenant_context
 from app.retrieval.pipeline import run_query_pipeline
 from sqlalchemy import select
 
+from worker.async_runner import run_async
 from worker.celery_app import celery_app
 
 
-@celery_app.task(  # type: ignore[misc]
-    bind=True,
-    name="worker.tasks.queries.run_query",
-    max_retries=20,
-)
-def run_query(
-    self: Any,
-    query_id: str,
-    tenant_id: str,
-    user_id: str,
-) -> dict[str, Any]:
-    """Execute one query once; retry deliveries that encounter an active lease."""
+@celery_app.task(bind=True, name="worker.tasks.queries.run_query", max_retries=5)  # type: ignore[misc]
+def run_query(self: Any, query_id: str, tenant_id: str, user_id: str) -> dict[str, Any]:
+    """Execute one query once; retry transient worker failures."""
     try:
-        result = asyncio.run(_run_query_once(UUID(query_id), UUID(tenant_id), UUID(user_id)))
+        return run_async(_run_query_once(UUID(query_id), UUID(tenant_id), UUID(user_id)))
     except Exception as exc:
         raise self.retry(exc=exc, countdown=15) from exc
 
-    if result["status"] == LeaseState.BUSY.value:
-        raise self.retry(countdown=30)
-    return result
-
 
 async def _run_query_once(query_id: UUID, tenant_id: UUID, user_id: UUID) -> dict[str, Any]:
-    """Keep the process-global async pool bound to only this invocation's loop."""
-    try:
-        return await _run_query(query_id, tenant_id, user_id)
-    finally:
-        await dispose_engine()
-
-
-async def _run_query(query_id: UUID, tenant_id: UUID, user_id: UUID) -> dict[str, Any]:
     lease = await acquire_query_lease(query_id, tenant_id)
     if lease.state != LeaseState.ACQUIRED or lease.token is None:
         return {

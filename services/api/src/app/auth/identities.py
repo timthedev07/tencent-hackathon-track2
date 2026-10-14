@@ -23,15 +23,11 @@ async def find_identity_link(
     session: AsyncSession,
     user_id: UUID,
     source: Source,
-    as_of: datetime | None = None,
 ) -> IdentityLink | None:
     """Find a user's verified identity link for a given source.
 
     If missing or ambiguous, the source is denied (INV-002).
     """
-    from app.retrieval.temporal import active_at, active_now
-
-    temporal_filter = active_at(IdentityLink, as_of) if as_of else active_now(IdentityLink)
     stmt = (
         select(IdentityLink)
         .join(
@@ -42,7 +38,6 @@ async def find_identity_link(
             IdentityLink.user_id == user_id,
             SourceConnection.source == source.value,
             IdentityLink.status == "verified",
-            temporal_filter,
         )
         .limit(2)
     )
@@ -50,7 +45,7 @@ async def find_identity_link(
     links = result.scalars().all()
 
     if len(links) == 0:
-        logger.info(
+        logger.debug(
             "Identity link missing — source will be denied",
             user_id=str(user_id),
             source=source.value,
@@ -58,6 +53,13 @@ async def find_identity_link(
         return None
 
     if len(links) > 1:
+        # Older local data may contain a placeholder link alongside the real
+        # provider subject. Prefer the verified real identity before treating
+        # genuinely conflicting identities as ambiguous.
+        placeholders = {"atlassian-user", "google-user"}
+        real_links = [link for link in links if link.provider_subject_id not in placeholders]
+        if len(real_links) == 1:
+            return real_links[0]
         logger.warning(
             "Ambiguous identity links — source will be denied",
             user_id=str(user_id),
@@ -73,24 +75,89 @@ async def create_identity_link(
     session: AsyncSession,
     tenant_id: UUID,
     user_id: UUID,
-    source_connection_id: UUID | str,
+    source_connection_id: UUID,
     provider_subject_id: str,
     *,
     provider_account_type: str | None = None,
     verified_by: str = "oauth",
 ) -> IdentityLink:
-    """Create and verify a new identity link."""
+    """Create or refresh a verified identity link without reassigning it."""
+    now = datetime.now(UTC)
+    existing_stmt = select(IdentityLink).where(
+        IdentityLink.source_connection_id == source_connection_id,
+        IdentityLink.provider_subject_id == provider_subject_id,
+    )
+    existing = (await session.execute(existing_stmt)).scalar_one_or_none()
+    if existing is not None:
+        if existing.user_id != user_id:
+            raise ValueError("IDENTITY_LINK_ALREADY_CLAIMED")
+        existing.provider_account_type = provider_account_type
+        existing.verified_at = now
+        existing.verified_by = verified_by
+        existing.status = "verified"
+        await _remove_placeholder_links(session, existing)
+        await session.flush()
+        logger.info(
+            "Identity link refreshed",
+            user_id=str(user_id),
+            source_connection_id=str(source_connection_id),
+            provider_subject_id=provider_subject_id,
+        )
+        return existing
+
+    existing_user_stmt = select(IdentityLink).where(
+        IdentityLink.user_id == user_id,
+        IdentityLink.source_connection_id == source_connection_id,
+    )
+    existing_user_links = (await session.execute(existing_user_stmt)).scalars().all()
+    placeholders = {"atlassian-user", "google-user"}
+    existing_user = next(
+        (
+            link
+            for link in existing_user_links
+            if link.provider_subject_id in placeholders
+        ),
+        existing_user_links[0] if existing_user_links else None,
+    )
+    if existing_user is not None:
+        if (
+            (
+                existing_user.provider_account_type == "atlassian"
+                and existing_user.provider_subject_id == "atlassian-user"
+            )
+            or (
+                existing_user.provider_account_type == "google"
+                and existing_user.provider_subject_id == "google-user"
+            )
+        ):
+            # Repair links created by the old provider fallbacks once the real
+            # account ID is available. These placeholders were never identities.
+            existing_user.provider_subject_id = provider_subject_id
+            existing_user.provider_account_type = provider_account_type
+            existing_user.verified_at = now
+            existing_user.verified_by = verified_by
+            existing_user.status = "verified"
+            for stale_link in existing_user_links[1:]:
+                await session.delete(stale_link)
+            await session.flush()
+            logger.info(
+                "Identity link repaired",
+                user_id=str(user_id),
+                source_connection_id=str(source_connection_id),
+                provider_subject_id=provider_subject_id,
+            )
+            return existing_user
+        raise ValueError("IDENTITY_LINK_SUBJECT_MISMATCH")
+
     link = IdentityLink(
         tenant_id=tenant_id,
         user_id=user_id,
         source_connection_id=source_connection_id,
         provider_subject_id=provider_subject_id,
         provider_account_type=provider_account_type,
-        verified_at=datetime.now(UTC),
+        verified_at=now,
         verified_by=verified_by,
         status="verified",
-        valid_from=datetime.now(UTC),
-        observed_at=datetime.now(UTC),
     )
     session.add(link)
     await session.flush()
@@ -101,6 +168,21 @@ async def create_identity_link(
         provider_subject_id=provider_subject_id,
     )
     return link
+
+
+async def _remove_placeholder_links(session: AsyncSession, current: IdentityLink) -> None:
+    """Remove stale pre-identity placeholders for the same user and source."""
+    placeholders = {"atlassian-user", "google-user"}
+    rows = await session.execute(
+        select(IdentityLink).where(
+            IdentityLink.user_id == current.user_id,
+            IdentityLink.source_connection_id == current.source_connection_id,
+            IdentityLink.id != current.id,
+            IdentityLink.provider_subject_id.in_(placeholders),
+        )
+    )
+    for row in rows.scalars().all():
+        await session.delete(row)
 
 
 async def is_compliance_user(session: AsyncSession, user_id: UUID) -> bool:

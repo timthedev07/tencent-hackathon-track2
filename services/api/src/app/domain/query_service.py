@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -34,6 +33,13 @@ from app.persistence.session import get_session_factory, set_tenant_context
 
 logger = get_logger(__name__)
 
+_TERMINAL_STATUSES = TERMINAL_QUERY_STATUSES
+_EMPTY_WORKSPACE_CODE = "NO_SEARCHABLE_CONTENT"
+_EMPTY_WORKSPACE_MESSAGE = (
+    "No searchable content is available in your connected workspaces yet. "
+    "Add content and wait for it to be indexed, then try again."
+)
+
 
 def _failure_message(query_id: UUID, error_code: str | None) -> str:
     """Return a safe, actionable failure message without exposing source text."""
@@ -47,11 +53,29 @@ def _failure_message(query_id: UUID, error_code: str | None) -> str:
     return f"{message} Reference: {query_id}."
 
 
+async def _query_state(
+    query_id: UUID,
+    user: AuthenticatedUser,
+) -> tuple[str | None, str | None]:
+    """Read the query state for the current tenant and user."""
+    factory = get_session_factory()
+    async with factory() as session:
+        await set_tenant_context(session, user.tenant_id)
+        result = await session.execute(
+            select(QueryRun.status, QueryRun.error_code).where(
+                QueryRun.id == query_id,
+                QueryRun.user_id == user.user_id,
+                QueryRun.tenant_id == user.tenant_id,
+            )
+        )
+        row = result.one_or_none()
+        return (row[0], row[1]) if row else (None, None)
+
+
 async def create_query_run(
     user_id: UUID,
     tenant_id: UUID,
     query_text: str,
-    as_of: datetime | None = None,
 ) -> dict:
     """Create a new query run with encrypted query text (INV-005)."""
     cm = get_credential_manager()
@@ -64,22 +88,21 @@ async def create_query_run(
             tenant_id=tenant_id,
             user_id=user_id,
             query_ciphertext=encrypted_query.ciphertext,
-            as_of=as_of,
             status="created",
         )
         session.add(run)
         await session.flush()
-        run_id = UUID(str(run.id))
         await append_query_event(
             session,
             tenant_id,
-            run_id,
+            UUID(str(run.id)),
             "query.queued",
             {"message": "Query queued for secure execution"},
+            force=True,
         )
         await session.commit()
         await session.refresh(run)
-        return {"id": run_id, "status": run.status}
+        return {"id": UUID(str(run.id)), "status": run.status}
 
 
 def enqueue_query_run(query_id: UUID, tenant_id: UUID, user_id: UUID) -> None:
@@ -98,17 +121,8 @@ def enqueue_query_run(query_id: UUID, tenant_id: UUID, user_id: UUID) -> None:
 
 async def ensure_query_access(query_id: UUID, user: AuthenticatedUser) -> None:
     """Return 404 unless the authenticated user owns the requested query."""
-    factory = get_session_factory()
-    async with factory() as session:
-        await set_tenant_context(session, user.tenant_id)
-        exists = await session.scalar(
-            select(QueryRun.id).where(
-                QueryRun.id == query_id,
-                QueryRun.user_id == user.user_id,
-                QueryRun.tenant_id == user.tenant_id,
-            )
-        )
-    if exists is None:
+    status_value, _ = await _query_state(query_id, user)
+    if status_value is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": {"code": "SOURCE_OBJECT_NOT_FOUND", "message": "Query not found."}},
@@ -120,15 +134,9 @@ async def stream_events(
     user: AuthenticatedUser,
     after_sequence: int = 0,
 ) -> AsyncIterator[dict]:
-    """Replay persisted progress events and then tail newly committed events.
-
-    This projection is intentionally read-only. Query execution belongs to the
-    worker and is guarded by a database lease, so reconnecting cannot run the
-    pipeline a second time.
-    """
+    """Replay persisted progress events and tail newly committed events."""
     cursor = max(after_sequence, 0)
     factory = get_session_factory()
-
     while True:
         async with factory() as session:
             await set_tenant_context(session, user.tenant_id)
@@ -157,11 +165,7 @@ async def stream_events(
         for event in events:
             cursor = event.sequence_no
             data = {"queryId": str(query_id), **event.payload}
-            yield {
-                "id": str(event.sequence_no),
-                "event": event.event_type,
-                "data": json.dumps(data, separators=(",", ":")),
-            }
+            yield {"event": event.event_type, "id": event.sequence_no, "data": data}
             if event.event_type in {
                 "query.completed",
                 "query.partial",
@@ -169,8 +173,7 @@ async def stream_events(
                 "query.failed",
             }:
                 return
-
-        if run_status in TERMINAL_QUERY_STATUSES:
+        if run_status in _TERMINAL_STATUSES:
             return
         await asyncio.sleep(0.25)
 
@@ -189,6 +192,8 @@ async def get_result(query_id: UUID, user: AuthenticatedUser) -> dict:
         run = result.scalar_one_or_none()
 
         if run is None:
+            from fastapi import HTTPException, status
+
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
@@ -211,24 +216,31 @@ async def get_result(query_id: UUID, user: AuthenticatedUser) -> dict:
                 answer = decrypted_answer
 
         # Load citations from evidence items
-        from app.persistence.models import EvidenceItem
+        from app.persistence.models import EvidenceItem, SourceObject
 
         evidence_stmt = (
-            select(EvidenceItem)
+            select(EvidenceItem, SourceObject.external_object_id)
+            .join(SourceObject, EvidenceItem.source_object_id == SourceObject.id)
             .where(EvidenceItem.query_id == query_id)
             .order_by(EvidenceItem.rank)
         )
         evidence_result = await session.execute(evidence_stmt)
-        evidence_items = evidence_result.scalars().all()
+        evidence_items = evidence_result.all()
 
         citations = [
             {
-                "evidenceId": str(e.id),
-                "source": e.source,
-                "label": e.title_snapshot,
-                "url": e.canonical_url,
+                "evidenceId": str(evidence.id),
+                "referenceId": (
+                    f"evi_{str(evidence.model_evidence_id).replace('-', '')[:12]}"
+                    if evidence.model_evidence_id
+                    else None
+                ),
+                "itemKey": str(external_object_id) if evidence.source == "jira" else None,
+                "source": evidence.source,
+                "label": evidence.title_snapshot,
+                "url": evidence.canonical_url,
             }
-            for e in evidence_items
+            for evidence, external_object_id in evidence_items
         ]
 
         partial_warnings = []
@@ -244,7 +256,6 @@ async def get_result(query_id: UUID, user: AuthenticatedUser) -> dict:
         return {
             "queryId": str(run.id),
             "status": run.status,
-            "asOf": run.as_of.isoformat() if run.as_of else None,
             "answer": answer,
             "claims": claims,
             "citations": citations,

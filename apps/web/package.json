@@ -2,11 +2,6 @@
   "name": "assistant-web",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "npm@11.7.0",
-  "engines": {
-    "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
-    "npm": ">=10.0.0"
-  },
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
@@ -17,8 +12,8 @@
     "test:watch": "vitest",
     "e2e": "playwright test",
     "generate-types": "openapi-typescript ../packages/contracts/openapi/openapi.json -o lib/api/generated.ts",
-    "format": "prettier --ignore-path ../../.prettierignore --write .",
-    "format:check": "prettier --ignore-path ../../.prettierignore --check .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

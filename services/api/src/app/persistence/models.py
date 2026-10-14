@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for Chronicle's tenant-scoped evidence graph.
+"""SQLAlchemy ORM models for all 17 database tables.
 
 All tenant-scoped tables use RLS (Row-Level Security).
 Audit table is INSERT-only (no UPDATE/DELETE for application role).
@@ -91,9 +91,11 @@ class SourceConnection(Base):  # type: ignore[misc]
         PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
     )
     source: Mapped[str] = mapped_column(Text, nullable=False)
-    mode: Mapped[str] = mapped_column(Text, nullable=False, default="delegated_oauth")
     external_workspace_id: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str | None] = mapped_column(Text)
+    scope_config: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa_text("'{}'::jsonb")
+    )
     status: Mapped[str] = mapped_column(Text, nullable=False, default="connected")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
@@ -155,12 +157,6 @@ class IdentityLink(Base):
     )
     verified_by: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="verified")
-    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    observed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
-    )
-    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
@@ -191,6 +187,9 @@ class SourceObject(Base):
     object_type: Mapped[str] = mapped_column(Text, nullable=False)
     parent_external_id: Mapped[str | None] = mapped_column(Text)
     canonical_url: Mapped[str | None] = mapped_column(Text)
+    provider_metadata: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa_text("'{}'::jsonb")
+    )
     current_revision: Mapped[str | None] = mapped_column(Text)
     current_version_id: Mapped[str | None] = mapped_column(PGUUID(as_uuid=True))
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -317,12 +316,9 @@ class AclGrant(Base):
     grant_effect: Mapped[str] = mapped_column(Text, nullable=False)
     inheritance_path: Mapped[dict | None] = mapped_column(JSONB)
     source_revision: Mapped[str | None] = mapped_column(Text)
-    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     observed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
-    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
@@ -350,7 +346,55 @@ class IngestionCursor(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
     )
 
-    __table_args__ = (UniqueConstraint("tenant_id", "source_connection_id", "cursor_type"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source_connection_id", "cursor_type"),
+    )
+
+
+class BackfillRun(Base):
+    """A user-visible lifecycle record for a manual source import."""
+
+    __tablename__ = "backfill_runs"
+
+    id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    source_connection_id: Mapped[str] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("source_connections.id"), nullable=False
+    )
+    requested_by_user_id: Mapped[str | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id")
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    discovered_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    enqueued_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_backfill_runs_tenant_connection_created",
+            "tenant_id",
+            "source_connection_id",
+            "created_at",
+        ),
+        Index(
+            "ix_backfill_runs_tenant_requester_created",
+            "tenant_id",
+            "requested_by_user_id",
+            "created_at",
+        ),
+    )
 
 
 class WebhookDelivery(Base):
@@ -383,21 +427,14 @@ class QueryRun(Base):
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
     query_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(Text, nullable=False, default="created")
     partial_sources: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     prompt_version: Mapped[str | None] = mapped_column(Text)
-    policy_version: Mapped[str | None] = mapped_column(Text)
     model_version: Mapped[str | None] = mapped_column(Text)
     embedding_version: Mapped[str | None] = mapped_column(Text)
     retriever_version: Mapped[str | None] = mapped_column(Text)
     reranker_version: Mapped[str | None] = mapped_column(Text)
     context_policy_version: Mapped[str | None] = mapped_column(Text)
-    context_compiler_version: Mapped[str | None] = mapped_column(Text)
-    authorised_context_hash: Mapped[str | None] = mapped_column(Text)
-    execution_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    execution_lease_token: Mapped[str | None] = mapped_column(Text)
-    execution_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
@@ -405,6 +442,11 @@ class QueryRun(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     error_code: Mapped[str | None] = mapped_column(Text)
     answer_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+    execution_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    execution_lease_token: Mapped[str | None] = mapped_column(Text)
+    execution_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     __table_args__ = (
         Index(
@@ -415,6 +457,7 @@ class QueryRun(Base):
 
     access_decisions: Mapped[list[AccessDecision]] = relationship(back_populates="query")
     evidence_items: Mapped[list[EvidenceItem]] = relationship(back_populates="query")
+    events: Mapped[list[QueryEvent]] = relationship()
 
 
 class AccessDecision(Base):
@@ -450,130 +493,6 @@ class AccessDecision(Base):
     query: Mapped[QueryRun] = relationship(back_populates="access_decisions")
 
 
-class EvidenceItem(Base):
-    __tablename__ = "evidence_items"
-
-    id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    query_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("query_runs.id"), nullable=False
-    )
-    tenant_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
-    )
-    chunk_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("chunks.id"), nullable=False
-    )
-    object_version_id: Mapped[str | None] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("object_versions.id")
-    )
-    source_object_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("source_objects.id"), nullable=False
-    )
-    source_revision: Mapped[str] = mapped_column(Text, nullable=False)
-    source: Mapped[str] = mapped_column(Text, nullable=False)
-    title_snapshot: Mapped[str | None] = mapped_column(Text)
-    canonical_url: Mapped[str | None] = mapped_column(Text)
-    quoted_span_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
-    content_hash: Mapped[str | None] = mapped_column(Text)
-    rank: Mapped[int] = mapped_column(Integer, nullable=False)
-    retrieval_score: Mapped[float | None] = mapped_column(Float)
-    rerank_score: Mapped[float | None] = mapped_column(Float)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
-    )
-
-    __table_args__ = (Index("ix_evidence_items_query_rank", "query_id", "rank"),)
-
-    query: Mapped[QueryRun] = relationship(back_populates="evidence_items")
-
-
-class Claim(Base):
-    """A bitemporal, source-backed fact used by the Knowledge Auditor."""
-
-    __tablename__ = "claims"
-
-    id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    tenant_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
-    )
-    object_version_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("object_versions.id"), nullable=False
-    )
-    subject: Mapped[str] = mapped_column(Text, nullable=False)
-    predicate: Mapped[str] = mapped_column(Text, nullable=False)
-    object_value: Mapped[str] = mapped_column(Text, nullable=False)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
-    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    observed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
-    )
-    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    __table_args__ = (
-        Index("ix_claims_tenant_subject_predicate", "tenant_id", "subject", "predicate"),
-        Index("ix_claims_object_version", "object_version_id"),
-    )
-
-
-class PolicyVersion(Base):
-    __tablename__ = "policy_versions"
-
-    id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    tenant_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
-    )
-    version: Mapped[str] = mapped_column(Text, nullable=False)
-    rules_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    content_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
-    )
-
-    __table_args__ = (UniqueConstraint("tenant_id", "version"),)
-
-
-class EvidenceCapsule(Base):
-    """Persisted, replayable snapshot committed with a query answer."""
-
-    __tablename__ = "evidence_capsules"
-
-    id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    tenant_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
-    )
-    query_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("query_runs.id"), nullable=False, unique=True
-    )
-    snapshot_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    context_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    answer_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
-    )
-
-    __table_args__ = (Index("ix_evidence_capsules_tenant_query", "tenant_id", "query_id"),)
-
-
-class AuditCheckpoint(Base):
-    __tablename__ = "audit_checkpoints"
-
-    id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    tenant_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
-    )
-    chain_head_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    signed_root: Mapped[str] = mapped_column(Text, nullable=False)
-    signer_key_id: Mapped[str] = mapped_column(Text, nullable=False)
-    exported_location: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
-    )
-
-    __table_args__ = (Index("ix_audit_checkpoints_tenant_created", "tenant_id", "created_at"),)
-
-
 class QueryEvent(Base):
     """Replayable query progress event; SSE is a read-only projection."""
 
@@ -599,95 +518,38 @@ class QueryEvent(Base):
     )
 
 
-class BacktestCase(Base):
-    __tablename__ = "backtest_cases"
+class EvidenceItem(Base):
+    __tablename__ = "evidence_items"
 
     id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    query_id: Mapped[str] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("query_runs.id"), nullable=False
+    )
     tenant_id: Mapped[str] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
     )
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    question: Mapped[str] = mapped_column(Text, nullable=False)
-    requester_subject: Mapped[str] = mapped_column(Text, nullable=False)
-    as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    expected_visibility: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    expected_citation_ids: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
-    expected_behavior: Mapped[str] = mapped_column(Text, nullable=False)
-    severity: Mapped[str] = mapped_column(Text, nullable=False, default="high")
-    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    chunk_id: Mapped[str] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("chunks.id"), nullable=False
+    )
+    source_object_id: Mapped[str] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("source_objects.id"), nullable=False
+    )
+    source_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    model_evidence_id: Mapped[str | None] = mapped_column(PGUUID(as_uuid=True))
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    title_snapshot: Mapped[str | None] = mapped_column(Text)
+    canonical_url: Mapped[str | None] = mapped_column(Text)
+    quoted_span_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    retrieval_score: Mapped[float | None] = mapped_column(Float)
+    rerank_score: Mapped[float | None] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
-    __table_args__ = (UniqueConstraint("tenant_id", "name"),)
+    __table_args__ = (Index("ix_evidence_items_query_rank", "query_id", "rank"),)
 
-
-class BacktestRun(Base):
-    __tablename__ = "backtest_runs"
-
-    id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    tenant_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
-    )
-    suite_version: Mapped[str] = mapped_column(Text, nullable=False)
-    policy_version: Mapped[str] = mapped_column(Text, nullable=False)
-    prompt_version: Mapped[str] = mapped_column(Text, nullable=False)
-    model_version: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding_version: Mapped[str] = mapped_column(Text, nullable=False)
-    reranker_version: Mapped[str] = mapped_column(Text, nullable=False)
-    context_compiler_version: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="running")
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class BacktestResult(Base):
-    __tablename__ = "backtest_results"
-
-    id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    tenant_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
-    )
-    run_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("backtest_runs.id"), nullable=False
-    )
-    case_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("backtest_cases.id"), nullable=False
-    )
-    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    answer_hash: Mapped[str | None] = mapped_column(Text)
-    citation_score: Mapped[float | None] = mapped_column(Float)
-    leakage_check: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    drift_class: Mapped[str | None] = mapped_column(Text)
-    notes: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
-    )
-
-    __table_args__ = (
-        UniqueConstraint("run_id", "case_id"),
-        Index("ix_backtest_results_tenant_run", "tenant_id", "run_id"),
-    )
-
-
-class FixtureEvent(Base):
-    __tablename__ = "fixture_events"
-
-    id: Mapped[str] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    tenant_id: Mapped[str] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
-    )
-    event_key: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow
-    )
-
-    __table_args__ = (UniqueConstraint("tenant_id", "event_key"),)
+    query: Mapped[QueryRun] = relationship(back_populates="evidence_items")
 
 
 class AuditEvent(Base):
