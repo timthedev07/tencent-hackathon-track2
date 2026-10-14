@@ -20,11 +20,11 @@ docker compose up -d postgres redis minio
 # 3. Run database migrations
 make migrate
 
-# 4. Start the API and worker
+# 4. Start the API and frontend
 make dev          # API on :8000
 make frontend-dev # Web on :3000
 
-# 6. Run Celery worker (separate terminal)
+# 5. Run the Celery worker and scheduler
 make worker
 ```
 
@@ -36,6 +36,8 @@ make worker
 | `make frontend-install` | Install frontend dependencies via yarn |
 | `make dev` | Start FastAPI dev server |
 | `make frontend-dev` | Start Next.js dev server |
+| `make worker` | Run asynchronous ingestion tasks and schedule provider reconciliation |
+| `make beat` | Run the scheduler separately when the worker is managed independently |
 | `make lint` | Lint backend (ruff) |
 | `make format` | Format Python with Ruff and supported source files with Prettier |
 | `make format-check` | Check Python and supported source-file formatting without changing files |

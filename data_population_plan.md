@@ -64,12 +64,12 @@ Use a separate browser profile for each application user and provider identity. 
    make migrate
    ```
 
-3. Start the API and web application in separate terminals, and start the Compose worker:
+3. Start the API, web application and locally managed worker in separate terminals. `make worker` also starts Celery Beat, so scheduled reconciliation is active without a Docker worker service:
 
    ```bash
    make dev
    make frontend-dev
-   docker compose up -d --build worker
+   make worker
    ```
 
 4. Confirm that the API, web application, PostgreSQL, Redis and worker are healthy before creating source data.
@@ -436,13 +436,13 @@ For every run, save the application user, exact query, query ID, provider object
 
 ## 10. Freshness, scale and limitations
 
-The current `docker-compose.yml` does not start Celery Beat. A manual backfill after an edit therefore does not prove automatic freshness within the minutes-to-about-an-hour requirement.
+`make worker` runs the worker with an embedded Celery Beat scheduler. Beat publishes the configured provider-reconciliation task every `RECONCILIATION_INTERVAL_MINUTES` (15 minutes by default); the worker then performs connector change detection and queues ingestion work. The Compose stack also provides a dedicated `beat` service for deployments that manage the worker and scheduler separately. A manual backfill remains useful for deterministic setup, but it must be labelled separately from scheduled reconciliation.
 
-- For the live demo, report manual edit-to-answer time as manual ingestion.
-- To test the actual freshness bound, run the configured reconciliation scheduler as a supervised process, confirm each connector’s `read_changes` behaviour, and time at least three edits per supported source. Record provider edit time, detection time, active-version time and the first query returning the new revision.
+- For the live demo, report manual edit-to-answer time as manual ingestion and scheduled edit-to-answer time as scheduled reconciliation.
+- To test the actual freshness bound, keep `make worker` running (or run the separate `beat` and worker processes), confirm each connector’s `read_changes` behaviour, and time at least three edits per supported source. Record provider edit time, detection time, active-version time and the first query returning the new revision.
 - If a connector performs a full scan, state that explicitly; do not describe it as a change feed.
 - Keep generated scale tests separate from the small live corpus. Report object counts, ingestion duration, retry/dead-letter counts, query latency, citation accuracy and ACL accuracy.
-- Disclose free-plan permission limitations, unsupported Drive MIME types, missing automatic scheduling and any connector that falls back to a full scan.
+- Disclose free-plan permission limitations, unsupported Drive MIME types and any connector that falls back to a full scan.
 
 ## 11. Final completion checklist
 

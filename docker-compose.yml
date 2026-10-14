@@ -82,6 +82,23 @@ services:
     command: >
       uv run celery -A worker.celery_app worker --loglevel=info --concurrency=2
 
+  beat:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://assistant:assistant@postgres:5432/assistant
+      REDIS_URL: redis://redis:6379/0
+      OBJECT_STORE_ENDPOINT: http://minio:9000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      uv run celery -A worker.celery_app beat --loglevel=info
+
   web:
     build:
       context: .

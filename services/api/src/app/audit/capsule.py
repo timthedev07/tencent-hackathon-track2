@@ -6,6 +6,7 @@ encrypted; the capsule references ciphertext, never plaintext.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import UUID
 
@@ -68,9 +69,15 @@ async def build_evidence_capsule(
     cm = get_credential_manager()
     answer_text: str | None = None
     if run.answer_ciphertext:
-        answer_text = cm.decrypt_bytes(EncryptedPayload(ciphertext=run.answer_ciphertext)).decode(
-            "utf-8"
-        )
+        decrypted_answer = cm.decrypt_bytes(
+            EncryptedPayload(ciphertext=run.answer_ciphertext)
+        ).decode("utf-8")
+        try:
+            answer_payload = json.loads(decrypted_answer)
+            answer_text = answer_payload.get("answer", decrypted_answer)
+        except (json.JSONDecodeError, AttributeError):
+            # Preserve compatibility with older rows that stored plain text.
+            answer_text = decrypted_answer
 
     acl_outcomes = [
         {

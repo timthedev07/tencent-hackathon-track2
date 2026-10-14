@@ -1,4 +1,4 @@
-.PHONY: install dev worker lint typecheck test test-integration test-security \
+.PHONY: install dev worker beat lint typecheck test test-integration test-security \
        format format-check migrate openapi frontend-install frontend-dev \
        frontend-format frontend-format-check \
        frontend-build frontend-lint frontend-test e2e docker-up docker-down \
@@ -16,7 +16,10 @@ dev:
 	uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 worker:
-	uv run celery -A worker.celery_app worker --loglevel=info --pool=$(CELERY_POOL) --concurrency=$(CELERY_CONCURRENCY)
+	uv run celery -A worker.celery_app worker --loglevel=info --pool=$(CELERY_POOL) --concurrency=$(CELERY_CONCURRENCY) --beat
+
+beat:
+	uv run celery -A worker.celery_app beat --loglevel=info
 
 lint:
 	uv run ruff check .

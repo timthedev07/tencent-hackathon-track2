@@ -57,12 +57,21 @@ export interface EvidenceResponse {
   quotedSpan?: string | null; canonicalUrl?: string | null; status?: string;
 }
 export interface AuditResponse {
-  queryId: string; timestamp: string | null; userIdentifier: string | null;
+  queryId: string; answer: string | null; timestamp: string | null; userIdentifier: string | null;
   queryStatus: string | null; modelVersion: string | null; promptVersion: string | null;
   accessDecisions: { source: string; decision: string; reasonCode: string | null; accessCheckedAt: string | null }[];
   evidenceManifest: { source: string; rank: number; sourceRevision: string }[];
-  citations: { evidenceId: string; source: string; rank: number; sourceRevision: string }[];
+  citations: Citation[];
   auditChainVerified: boolean; partialSources: unknown[]; errors: unknown[];
+}
+export interface AuditHistoryItem {
+  queryId: string; queryText: string; timestamp: string | null;
+  userIdentifier: string | null; userDisplayName: string | null;
+  queryStatus: string; evidenceCount: number; auditEventCount: number;
+}
+export interface AuditHistoryResponse {
+  items: AuditHistoryItem[]; total: number; limit: number; offset: number;
+  auditChainVerified: boolean;
 }
 export interface OAuthStartResponse { authoriseUrl: string }
 
@@ -77,6 +86,9 @@ export async function getEvidence(evidenceId: string): Promise<EvidenceResponse>
 }
 export async function getAuditCapsule(queryId: string): Promise<AuditResponse> {
   return apiFetch<AuditResponse>(`/audit/${queryId}`);
+}
+export async function getAuditHistory(limit = 50, offset = 0): Promise<AuditHistoryResponse> {
+  return apiFetch<AuditHistoryResponse>(`/audit/queries?limit=${limit}&offset=${offset}`);
 }
 export async function startOAuth(provider: 'atlassian' | 'slack' | 'google'): Promise<OAuthStartResponse> {
   return apiFetch<OAuthStartResponse>(`/oauth/${provider}/start`);

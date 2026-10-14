@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import {
   ArrowUpRight,
   CircleHelp,
+  FileSearch,
   LogOut,
   MessageSquareText,
   Settings,
@@ -14,12 +15,13 @@ import {
   UserRound,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { clearAuthToken, getAuthToken } from '@/lib/api/client';
+import { clearAuthToken, getAuthToken, getAuditHistory } from '@/lib/api/client';
 import { GlassPanel } from './GlassPanel';
 import { ThemeToggle } from './ThemeToggle';
 
 const navigation = [
   { href: '/query', label: 'Ask the assistant', icon: MessageSquareText },
+  { href: '/compliance', label: 'Compliance history', icon: FileSearch, complianceOnly: true },
   { href: '/settings', label: 'Connected sources', icon: Settings },
 ];
 
@@ -29,6 +31,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'guest'>('checking');
   const [accountLabel, setAccountLabel] = useState('Guest');
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [complianceStatus, setComplianceStatus] = useState<'checking' | 'allowed' | 'denied'>('checking');
   const publicPath = pathname === '/' || pathname === '/login';
 
   useEffect(() => {
@@ -43,6 +46,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const devSubject = token?.startsWith('dev-') ? token.slice(4) : null;
       const signedIn = Boolean(token);
       setAuthStatus(signedIn ? 'authenticated' : 'guest');
+      setComplianceStatus('checking');
       if (!signedIn && !publicPath) router.replace('/login');
       setAccountLabel(
         devSubject
@@ -51,6 +55,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             ? 'Signed in'
             : 'Guest',
       );
+      if (signedIn) {
+        getAuditHistory(1)
+          .then(() => setComplianceStatus('allowed'))
+          .catch(() => setComplianceStatus('denied'));
+      } else {
+        setComplianceStatus('denied');
+      }
     }, 0);
     return () => window.clearTimeout(refresh);
   }, [pathname, publicPath, router]);
@@ -79,6 +90,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="sidebar-label">Workspace</div>
         <nav className="sidebar-nav" aria-label="Main navigation">
           {navigation.map((item) => {
+            if (item.complianceOnly && complianceStatus !== 'allowed') return null;
             const Icon = item.icon;
             const active = pathname === item.href || (item.href === '/query' && pathname.startsWith('/evidence'));
             return (
