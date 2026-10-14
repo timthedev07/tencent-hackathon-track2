@@ -2,6 +2,231 @@
 
 This document explains how to obtain every credential referenced in `.env.example` for local development and demo deployment. Each section links to the official documentation it was verified against.
 
+## Hosted demo: GitHub Actions + Render
+
+This section is the shortest path for the current short-lived demo deployment. The workflow is [`.github/workflows/ci-cd.yml`](../.github/workflows/ci-cd.yml) and the Render infrastructure is [`render.yaml`](../render.yaml).
+
+### What you need
+
+For the minimum hosted demo, obtain or configure:
+
+| Where | Name | Secret? | Purpose |
+|---|---|---:|---|
+| GitHub Actions environment `demo` | `RENDER_API_KEY` | Yes | Allows CI to trigger Render deployments. |
+| GitHub Actions environment `demo` | `RENDER_API_SERVICE_ID` | No | Identifies the FastAPI service. |
+| GitHub Actions environment `demo` | `RENDER_WEB_SERVICE_ID` | No | Identifies the Next.js service. |
+| GitHub Actions environment `demo` | `DEMO_API_URL` | No | API URL used by the smoke test. |
+| GitHub Actions environment `demo` | `DEMO_WEB_URL` | No | Web URL used by the smoke test. |
+| Render API service | `MODEL_API_KEY` | Yes | Lets the model gateway generate and embed answers. |
+
+PostgreSQL and Redis connection strings, the encryption key, and the audit signing key are generated or connected by the Render Blueprint. They do not need to be copied into GitHub.
+
+### Where each value goes
+
+| Value type | Exact destination |
+|---|---|
+| Local API settings and provider credentials | Copy `.env.example` to `.env` in the repository root, then replace the relevant values. The API loads this file automatically. Never commit `.env`. |
+| Local web API URL | Create `apps/web/.env.local` and set `NEXT_PUBLIC_API_URL=http://localhost:8000`. |
+| Hosted API settings and provider credentials | Render Dashboard → `relay-demo-api` → **Environment**. Add each variable as a separate environment variable, then save and redeploy. |
+| Hosted web API URL | Render Dashboard → `relay-demo-web` → **Environment** → `NEXT_PUBLIC_API_URL`. |
+| Deployment credential | GitHub repository → **Settings → Environments → demo** → **Environment secrets** → `RENDER_API_KEY`. |
+| Render service IDs | GitHub repository → **Settings → Environments → demo** → **Environment secrets** → `RENDER_API_SERVICE_ID` and `RENDER_WEB_SERVICE_ID`. |
+| Smoke-test URLs | GitHub repository → **Settings → Environments → demo** → **Environment variables** → `DEMO_API_URL` and `DEMO_WEB_URL`. |
+
+For hosted deployment, do not put application credentials in GitHub Actions. GitHub only needs the Render deployment key and identifiers; the API reads runtime credentials from Render.
+
+### 1. Connect Render to GitHub
+
+1. Sign in to [Render](https://dashboard.render.com/).
+2. If the repository is private, connect the repository through Render's [Git provider integration](https://render.com/docs/git-provider).
+3. Push this repository, including `render.yaml`, to the branch you intend to deploy (`dev` or `main`).
+4. In Render, select **New → Blueprint**, choose this repository and branch, and apply `render.yaml`. See [Render Blueprints](https://render.com/docs/infrastructure-as-code).
+5. When prompted, provide `MODEL_API_KEY`. Leave generated values for `ENCRYPTION_MASTER_KEY` and `AUDIT_CHECKPOINT_SIGNING_KEY` enabled.
+6. Set these values on the API service after the two service URLs are known:
+   - `WEB_BASE_URL` = the web service URL, for example `https://relay-demo-web.onrender.com`.
+   - `CORS_ALLOWED_ORIGINS` = the same web service URL.
+7. Set `NEXT_PUBLIC_API_URL` on the web service to the API service URL, for example `https://relay-demo-api.onrender.com`.
+
+The Blueprint sets service auto-deploy to off so GitHub Actions remains the deployment gate. The `sync: false` values are prompted for during initial Blueprint creation; Render documents that new values with `sync: false` must be added manually later if the Blueprint already exists. See [Render environment variables](https://render.com/docs/configure-environment-variables).
+
+### 2. Create the Render API key
+
+1. Open Render **Account Settings → API Keys**, or follow the [Render API setup guide](https://render.com/docs/api).
+2. Select **Create API key**.
+3. Give it a descriptive name such as `github-actions-demo-deploy`.
+4. Copy the value immediately. Render displays the full key only when it is created.
+5. Treat it as a password. Do not put it in `render.yaml`, `.env.example`, a commit, an issue, or a workflow log.
+
+The workflow sends this key as a Bearer token to Render's [Trigger Deploy endpoint](https://api-docs.render.com/reference/create-deploy).
+
+### 3. Find both Render service IDs
+
+After the Blueprint creates the services:
+
+1. Open the `relay-demo-api` service in Render.
+2. Copy the service ID from the service URL or service settings. It has the form `srv-...`.
+3. Repeat for `relay-demo-web`.
+
+The service IDs are identifiers rather than passwords, but keep them in the protected `demo` environment because the workflow reads them alongside the API key.
+
+### 4. Configure GitHub Actions
+
+Create a GitHub environment named `demo`:
+
+1. Open the repository on GitHub.
+2. Go to **Settings → Environments → New environment**.
+3. Name it `demo`.
+4. Optionally add a required reviewer if deployments should be approved manually. See [GitHub deployment environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment).
+
+Add the following under **Environment secrets**:
+
+1. `RENDER_API_KEY` — paste the Render API key from step 2.
+2. `RENDER_API_SERVICE_ID` — paste the `srv-...` API service ID.
+3. `RENDER_WEB_SERVICE_ID` — paste the `srv-...` web service ID.
+
+Add the following under **Environment variables**:
+
+1. `DEMO_API_URL` — the public API URL, without a trailing slash.
+2. `DEMO_WEB_URL` — the public web URL, without a trailing slash.
+
+GitHub's automatically provided `GITHUB_TOKEN` is sufficient for checkout. No GitHub personal access token is needed. See [GitHub Actions secrets](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions) and [GitHub Actions variables](https://docs.github.com/en/actions/learn-github-actions/variables).
+
+### 5. Create the model API key
+
+The current Blueprint uses `MODEL_PROVIDER=openai`.
+
+1. Sign in to the [OpenAI API platform](https://platform.openai.com/).
+2. Create or select a project, then open [API keys](https://platform.openai.com/api-keys).
+3. Select **Create new secret key** and copy it immediately.
+4. Ensure the project has an active payment method or available credit in [Billing](https://platform.openai.com/settings/organization/billing/overview).
+5. In Render, open `relay-demo-api → Environment` and set `MODEL_API_KEY` to the key.
+6. Redeploy the API service, or push a commit after the value is saved.
+
+Do not store this runtime key in GitHub unless the workflow itself needs to call the model. The application reads it from Render at runtime. Check [OpenAI model documentation](https://platform.openai.com/docs/models) before changing `GENERATION_MODEL`, `EMBEDDING_MODEL`, or `RERANK_MODEL`.
+
+### 6. Verify the deployment
+
+1. Push a commit to `dev` or `main`, or run the workflow manually from **Actions → CI/CD → Run workflow**.
+2. Confirm the **Quality checks** job passes.
+3. Confirm the **Deploy demo to Render** job reaches `live` for both services.
+4. Open `DEMO_WEB_URL` and use the development sign-in screen.
+5. If the web app cannot call the API, recheck `NEXT_PUBLIC_API_URL`, `WEB_BASE_URL`, and `CORS_ALLOWED_ORIGINS` for exact spelling and no trailing slash.
+
+The demo deliberately uses `APP_ENV=development`, so its built-in sign-in accepts development tokens. Do not expose it to real users or sensitive data.
+
+## Optional source-integration credentials
+
+The following credentials are only needed if the demo connects to those providers. OAuth access and refresh tokens are obtained during the user authorisation flow and are stored by the application; they are not manually placed in `.env`.
+
+### Atlassian: Jira and Confluence
+
+1. Open the [Atlassian Developer Console](https://developer.atlassian.com/console/myapps/).
+2. Create an **OAuth 2.0 (3LO)** app.
+3. Copy the app's **Client ID** to `ATLASSIAN_CLIENT_ID` and **Client secret** to `ATLASSIAN_CLIENT_SECRET`.
+4. Add this callback URL, replacing `<api-host>` with the deployed API hostname:
+   ```text
+   https://<api-host>/v1/oauth/atlassian/callback
+   ```
+5. In Render Dashboard → `relay-demo-api` → **Environment**, add:
+   ```text
+   ATLASSIAN_CLIENT_ID=<client-id>
+   ATLASSIAN_CLIENT_SECRET=<client-secret>
+   ATLASSIAN_REDIRECT_URI=https://<api-host>/v1/oauth/atlassian/callback
+   ATLASSIAN_WEBHOOK_SECRET=<self-generated-secret-if-used>
+   ```
+6. Add only the read scopes required by the demo, then save and authorise the app.
+
+Read [Atlassian OAuth 2.0 (3LO) apps](https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/) and [Atlassian OAuth security guidance](https://developer.atlassian.com/cloud/jira/platform/security-for-other-integrations/).
+
+### Slack
+
+1. Open [Slack API → Your Apps](https://api.slack.com/apps).
+2. Select **Create New App → From scratch**, then choose the workspace.
+3. From **Basic Information**, copy **Client ID**, **Client Secret**, and **Signing Secret** to:
+   - `SLACK_CLIENT_ID`
+   - `SLACK_CLIENT_SECRET`
+   - `SLACK_SIGNING_SECRET`
+4. Under **OAuth & Permissions**, add this redirect URL:
+   ```text
+   https://<api-host>/v1/oauth/slack/callback
+   ```
+5. In Render Dashboard → `relay-demo-api` → **Environment**, add:
+   ```text
+   SLACK_CLIENT_ID=<client-id>
+   SLACK_CLIENT_SECRET=<client-secret>
+   SLACK_SIGNING_SECRET=<signing-secret>
+   SLACK_REDIRECT_URI=https://<api-host>/v1/oauth/slack/callback
+   ```
+6. Add the minimum bot scopes required by the demo and install the app to the workspace.
+7. If event ingestion is enabled, set the request URL to:
+   ```text
+   https://<api-host>/v1/webhooks/slack
+   ```
+
+Read [Slack OAuth installation](https://docs.slack.dev/authentication/installing-with-oauth/), [request verification](https://docs.slack.dev/authentication/verifying-requests-from-slack/), and the [Slack scopes reference](https://docs.slack.dev/reference/scopes/).
+
+### Google Drive
+
+1. Create or select a project in the [Google Cloud Console](https://console.cloud.google.com/).
+2. Enable the [Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com).
+3. Configure the OAuth consent screen under **Google Auth Platform**. Use **Internal** for a Google Workspace-only demo where available; otherwise use **External** and add test users.
+4. Open [APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials).
+5. Create an **OAuth client ID** with application type **Web application**.
+6. Add this authorised redirect URI:
+   ```text
+   https://<api-host>/v1/oauth/google/callback
+   ```
+7. In Render Dashboard → `relay-demo-api` → **Environment**, add:
+   ```text
+   GOOGLE_CLIENT_ID=<client-id>
+   GOOGLE_CLIENT_SECRET=<client-secret>
+   GOOGLE_REDIRECT_URI=https://<api-host>/v1/oauth/google/callback
+   GOOGLE_WEBHOOK_TOKEN=<self-generated-token-if-used>
+   ```
+8. Generate a high-entropy channel token yourself and set it as `GOOGLE_WEBHOOK_TOKEN` if Drive push notifications are enabled.
+
+Read Google's [web-server OAuth guide](https://developers.google.com/identity/protocols/oauth2/web-server), [OAuth scopes](https://developers.google.com/identity/protocols/oauth2/scopes), and [Drive API overview](https://developers.google.com/drive/api/guides/about-sdk).
+
+### OIDC identity provider
+
+OIDC is not required for this demo because `APP_ENV=development` enables the built-in development sign-in. For a real deployment:
+
+1. Create an OIDC client in your identity provider, such as [Keycloak](https://www.keycloak.org/getting-started/getting-started-docker), [Microsoft Entra ID](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app), or [Auth0](https://auth0.com/docs/get-started/authentication-and-authorization-flow).
+2. Set:
+   - `OIDC_ISSUER` to the provider's issuer URL.
+   - `OIDC_AUDIENCE` to the API audience/client identifier.
+   - `OIDC_JWKS_URL` to the provider's JSON Web Key Set URL.
+   - `OIDC_TENANT_CLAIM` to the claim containing the organisation identifier, normally `org_id` for this application.
+   Put these four variables in Render Dashboard → `relay-demo-api` → **Environment** for a hosted deployment, or in the repository-root `.env` for local development.
+3. Configure the provider to issue a stable `sub` claim and the tenant claim expected by the API.
+4. Change `APP_ENV` to `production` only after all production-required settings in `services/api/src/app/settings.py` are present.
+
+### S3-compatible object storage and KMS
+
+Object storage is only needed when audit checkpoints are uploaded. For a hosted demo, you may leave the local MinIO defaults unused unless the checkpoint task is exercised.
+
+For AWS:
+
+1. Create an S3 bucket in the [AWS S3 console](https://console.aws.amazon.com/s3/).
+2. Create a least-privilege IAM user or role with access only to that bucket, following [AWS IAM best practices](https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html).
+3. Set `OBJECT_STORE_ENDPOINT`, `OBJECT_STORE_BUCKET`, `OBJECT_STORE_ACCESS_KEY`, and `OBJECT_STORE_SECRET_KEY` in Render.
+4. For envelope-key management, create a key in [AWS KMS](https://console.aws.amazon.com/kms/) and set `KMS_KEY_ID`.
+
+These values belong in Render Dashboard → `relay-demo-api` → **Environment**. For local MinIO, put them in the repository-root `.env` instead.
+
+For Cloudflare R2, create a bucket and an API token from [R2 Object Storage](https://developers.cloudflare.com/r2/), then use the S3-compatible endpoint and access-key pair for the same four `OBJECT_STORE_*` values.
+
+## Values generated by Render or the Blueprint
+
+Do not invent or commit these values:
+
+- `DATABASE_URL` — supplied from the Render PostgreSQL resource.
+- `REDIS_URL` — supplied from the Render Key Value resource.
+- `ENCRYPTION_MASTER_KEY` — generated by `render.yaml`.
+- `AUDIT_CHECKPOINT_SIGNING_KEY` — generated by `render.yaml`.
+
+If any of these values are exposed, rotate or recreate the affected resource and update the service environment before redeploying.
+
 ---
 
 ## 1. Application Configuration
@@ -522,7 +747,7 @@ Adjust based on your provider latency and freshness requirements. The spec targe
 
 7. Start the frontend:
    ```bash
-   cd apps/web && npm install && npm run dev
+   cd apps/web && yarn install && yarn dev
    ```
 
 ---

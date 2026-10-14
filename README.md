@@ -74,6 +74,8 @@ See [`implementation_plan.md`](implementation_plan.md) for the detailed implemen
 
 The repository includes [`render.yaml`](render.yaml) for a lowest-cost demo deployment on Render. It uses free web services, free PostgreSQL with pgvector, and free Redis-compatible Key Value. Render's free PostgreSQL database expires after 30 days, and free services can sleep when idle, so this setup is for demonstrations only.
 
+Follow the step-by-step [credential setup guide](docs/credentials-setup.md) before creating the Blueprint.
+
 Create the Render Blueprint once, then disable Render auto-deploys. The [`CI/CD workflow`](.github/workflows/ci-cd.yml) runs the Python and web checks and, after they pass on `dev` or `main`, triggers and waits for both Render deployments before smoke-testing them.
 
 Set these GitHub Actions secrets:
