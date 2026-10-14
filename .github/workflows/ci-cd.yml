@@ -96,23 +96,42 @@ jobs:
           set -euo pipefail
 
           trigger_deploy() {
-            local service_id="$1"
-            curl --fail-with-body --silent --show-error \
+            local label="$1"
+            local service_id="$2"
+            local response
+
+            if [[ -z "${service_id}" ]]; then
+              echo "Render ${label} service ID is empty." >&2
+              return 1
+            fi
+
+            if ! response="$(curl --fail-with-body --silent --show-error \
               --request POST \
               --url "https://api.render.com/v1/services/${service_id}/deploys" \
               --header "Authorization: Bearer ${RENDER_API_KEY}" \
               --header 'Accept: application/json' \
               --header 'Content-Type: application/json' \
-              --data "{\"commitId\":\"${GITHUB_SHA}\",\"clearCache\":\"do_not_clear\",\"deployMode\":\"build_and_deploy\"}"
+              --data "{\"commitId\":\"${GITHUB_SHA}\",\"clearCache\":\"do_not_clear\",\"deployMode\":\"build_and_deploy\"}")"; then
+              echo "Render ${label} deployment request failed for service ${service_id}." >&2
+              echo "${response}" >&2
+              return 1
+            fi
+
+            if ! jq -e '.id | strings | length > 0' >/dev/null <<<"${response}"; then
+              echo "Render returned an unexpected ${label} deployment response." >&2
+              echo "${response}" >&2
+              return 1
+            fi
+
+            echo "Render ${label} deployment accepted: $(jq -c '{id, status}' <<<"${response}")" >&2
+            printf '%s\n' "${response}"
           }
 
-          api_deploy="$(trigger_deploy "${RENDER_API_SERVICE_ID}")"
-          web_deploy="$(trigger_deploy "${RENDER_WEB_SERVICE_ID}")"
+          api_deploy="$(trigger_deploy "API" "${RENDER_API_SERVICE_ID}")"
+          web_deploy="$(trigger_deploy "web" "${RENDER_WEB_SERVICE_ID}")"
           api_deploy_id="$(jq -r '.id // empty' <<<"${api_deploy}")"
           web_deploy_id="$(jq -r '.id // empty' <<<"${web_deploy}")"
 
-          test -n "${api_deploy_id}"
-          test -n "${web_deploy_id}"
           echo "api_deploy_id=${api_deploy_id}" >> "${GITHUB_OUTPUT}"
           echo "web_deploy_id=${web_deploy_id}" >> "${GITHUB_OUTPUT}"
 
@@ -129,13 +148,23 @@ jobs:
           wait_for_deploy() {
             local service_id="$1"
             local deploy_id="$2"
-            local status
+            local response status
 
             for attempt in $(seq 1 80); do
-              status="$(curl --fail-with-body --silent --show-error \
+              if ! response="$(curl --fail-with-body --silent --show-error \
                 --url "https://api.render.com/v1/services/${service_id}/deploys/${deploy_id}" \
                 --header "Authorization: Bearer ${RENDER_API_KEY}" \
-                --header 'Accept: application/json' | jq -r '.status')"
+                --header 'Accept: application/json')"; then
+                echo "Unable to read Render deployment ${deploy_id} for service ${service_id}." >&2
+                echo "${response}" >&2
+                return 1
+              fi
+              status="$(jq -r '.status // empty' <<<"${response}")"
+              if [[ -z "${status}" ]]; then
+                echo "Render returned an unexpected status response for deployment ${deploy_id}." >&2
+                echo "${response}" >&2
+                return 1
+              fi
               echo "${service_id}: ${status}"
               case "${status}" in
                 live) return 0 ;;
