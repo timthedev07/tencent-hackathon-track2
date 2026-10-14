@@ -41,7 +41,7 @@ function HistoryRow({ item }: { item: AuditHistoryItem }) {
         </div>
         <div className="flex flex-none items-center gap-3">
           <span className={`text-[11px] font-medium capitalize ${statusTone}`}>{statusLabel(item.queryStatus)}</span>
-          <Link href={`/audit/${item.queryId}`} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-[11px] font-medium ghost-glass">
+          <Link href={`/compliance/${item.queryId}`} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-[11px] font-medium ghost-glass">
             Open trail <ArrowRight size={13} />
           </Link>
         </div>

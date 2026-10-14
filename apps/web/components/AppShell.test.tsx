@@ -11,6 +11,9 @@ const navigation = vi.hoisted(() => ({
   replace: vi.fn(),
   push: vi.fn(),
 }));
+const api = vi.hoisted(() => ({
+  getAuditHistory: vi.fn(),
+}));
 
 vi.mock('next/navigation', () => ({
   usePathname: () => navigation.pathname,
@@ -18,9 +21,14 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('next/link', () => ({
-  default: ({ children, href }: { children: React.ReactNode; href: string }) => (
-    <a href={href}>{children}</a>
+  default: ({ children, href, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a href={href} {...props}>{children}</a>
   ),
+}));
+
+vi.mock('@/lib/api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/client')>()),
+  getAuditHistory: api.getAuditHistory,
 }));
 
 import { AppShell } from './AppShell';
@@ -33,6 +41,7 @@ beforeEach(() => {
   navigation.pathname = '/query';
   navigation.replace.mockReset();
   navigation.push.mockReset();
+  api.getAuditHistory.mockResolvedValue({});
   window.localStorage.clear();
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -71,4 +80,21 @@ test('renders the public homepage immediately for a guest', async () => {
 
   expect(container.textContent).toContain('Public homepage');
   expect(navigation.replace).not.toHaveBeenCalled();
+});
+
+test('keeps compliance highlighted on an audit-detail subroute', async () => {
+  navigation.pathname = '/compliance/query-123';
+  window.localStorage.setItem('auth_token', 'dev-compliance');
+
+  await act(async () => {
+    root.render(
+      <AppShell>
+        <div>Compliance detail</div>
+      </AppShell>,
+    );
+  });
+  await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)));
+  await act(async () => Promise.resolve());
+
+  expect(container.querySelector('a[href="/compliance"]')?.className).toContain('sidebar-link-active');
 });

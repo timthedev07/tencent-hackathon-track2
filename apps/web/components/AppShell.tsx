@@ -92,7 +92,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {navigation.map((item) => {
             if (item.complianceOnly && complianceStatus !== 'allowed') return null;
             const Icon = item.icon;
-            const active = pathname === item.href || (item.href === '/query' && pathname.startsWith('/evidence'));
+            const active = pathname === item.href || pathname.startsWith(`${item.href}/`) || (item.href === '/query' && pathname.startsWith('/evidence'));
             return (
               <Link key={item.href} href={item.href} className={cn('sidebar-link', active && 'sidebar-link-active')}>
                 <Icon size={17} />
