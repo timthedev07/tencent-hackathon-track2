@@ -20,6 +20,7 @@ COPY pyproject.toml uv.lock ./
 COPY services/ ./services/
 COPY alembic/ ./alembic/
 COPY packages/ ./packages/
+COPY infra/render/ ./infra/render/
 
 # Install dependencies
 RUN uv sync --frozen --no-dev

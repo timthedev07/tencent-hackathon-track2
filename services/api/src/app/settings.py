@@ -112,6 +112,13 @@ class Settings(BaseSettings):
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ALLOWED_ORIGINS.split(",") if origin.strip()]
 
+    @property
+    def async_database_url(self) -> str:
+        """Return a SQLAlchemy URL suitable for the async PostgreSQL driver."""
+        if self.DATABASE_URL.startswith("postgresql://"):
+            return self.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return self.DATABASE_URL
+
     def validate_for_startup(self) -> None:
         """Fail closed when production-critical settings are missing."""
         if not self.is_production:

@@ -1,0 +1,62 @@
+services:
+  - type: web
+    name: relay-demo-api
+    runtime: docker
+    plan: free
+    region: singapore
+    autoDeployTrigger: off
+    dockerfilePath: ./infra/docker/Dockerfile.api
+    dockerContext: .
+    dockerCommand: ./infra/render/start-api.sh
+    healthCheckPath: /health/live
+    envVars:
+      - key: APP_ENV
+        value: development
+      - key: APP_BASE_URL
+        value: https://relay-demo-api.onrender.com
+      - key: WEB_BASE_URL
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: relay-demo-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: relay-demo-redis
+          type: keyvalue
+          property: connectionString
+      - key: MODEL_API_KEY
+        sync: false
+      - key: ENCRYPTION_MASTER_KEY
+        generateValue: true
+      - key: AUDIT_CHECKPOINT_SIGNING_KEY
+        generateValue: true
+
+  - type: web
+    name: relay-demo-web
+    runtime: docker
+    plan: free
+    region: singapore
+    autoDeployTrigger: off
+    dockerfilePath: ./infra/docker/Dockerfile.web
+    dockerContext: .
+    healthCheckPath: /
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+
+  - type: keyvalue
+    name: relay-demo-redis
+    plan: free
+    region: singapore
+    ipAllowList: []
+
+databases:
+  - name: relay-demo-db
+    plan: free
+    region: singapore
+    postgresMajorVersion: "16"
+    databaseName: assistant
+    user: assistant

@@ -69,3 +69,30 @@ See [`docs/standards.md`](docs/standards.md) for the full set of enforced standa
 ## Implementation Plan
 
 See [`implementation_plan.md`](implementation_plan.md) for the detailed implementation plan.
+
+## Short-lived demo deployment
+
+The repository includes [`render.yaml`](render.yaml) for a lowest-cost demo deployment on Render. It uses free web services, free PostgreSQL with pgvector, and free Redis-compatible Key Value. Render's free PostgreSQL database expires after 30 days, and free services can sleep when idle, so this setup is for demonstrations only.
+
+Create the Render Blueprint once, then disable Render auto-deploys. The [`CI/CD workflow`](.github/workflows/ci-cd.yml) runs the Python and web checks and, after they pass on `dev` or `main`, triggers and waits for both Render deployments before smoke-testing them.
+
+Set these GitHub Actions secrets:
+
+- `RENDER_API_KEY` — a Render API key from Account Settings → API Keys.
+- `RENDER_API_SERVICE_ID` — the API service ID, in the Render service URL or service settings.
+- `RENDER_WEB_SERVICE_ID` — the web service ID, in the Render service URL or service settings.
+
+Set these GitHub Actions variables:
+
+- `DEMO_API_URL` — for example, `https://relay-demo-api.onrender.com`.
+- `DEMO_WEB_URL` — for example, `https://relay-demo-web.onrender.com`.
+
+Set these Render environment values during Blueprint creation:
+
+- `MODEL_API_KEY` — required for model-backed answers.
+- `WEB_BASE_URL` and `CORS_ALLOWED_ORIGINS` — set both to the deployed web URL.
+- `NEXT_PUBLIC_API_URL` — set to the deployed API URL, then redeploy once.
+
+GitHub's built-in `GITHUB_TOKEN` is sufficient for checkout; no GitHub personal access token or Docker registry credential is required. Provider credentials for Atlassian, Slack, Google Drive, OIDC, or S3-compatible object storage are only needed if those integrations are demonstrated.
+
+The demo runs with `APP_ENV=development` so the built-in sign-in screen works without configuring an OIDC provider. Do not use this configuration for real users or sensitive data.

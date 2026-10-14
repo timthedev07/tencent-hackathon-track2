@@ -1,0 +1,161 @@
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: demo-deployment-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Render CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/render-oss/cli/main/bin/install.sh | sh
+          echo "$HOME/.render/bin" >> "$GITHUB_PATH"
+
+      - name: Validate Render Blueprint
+        run: render blueprints validate render.yaml --output text --confirm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Lint Python
+        run: uv run ruff check .
+
+      - name: Type-check Python
+        run: uv run pyright
+
+      - name: Test Python
+        run: uv run pytest -q
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Yarn
+        run: corepack enable && corepack prepare yarn@1.22.22 --activate
+
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: yarn install --frozen-lockfile
+
+      - name: Lint web app
+        working-directory: apps/web
+        run: yarn lint
+
+      - name: Build web app
+        working-directory: apps/web
+        run: yarn build
+
+  deploy:
+    name: Deploy demo to Render
+    needs: quality
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: demo
+    steps:
+      - name: Trigger API and web deployments
+        id: trigger
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_API_SERVICE_ID: ${{ secrets.RENDER_API_SERVICE_ID }}
+          RENDER_WEB_SERVICE_ID: ${{ secrets.RENDER_WEB_SERVICE_ID }}
+        run: |
+          set -euo pipefail
+
+          trigger_deploy() {
+            local service_id="$1"
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --url "https://api.render.com/v1/services/${service_id}/deploys" \
+              --header "Authorization: Bearer ${RENDER_API_KEY}" \
+              --header 'Accept: application/json' \
+              --header 'Content-Type: application/json' \
+              --data "{\"commitId\":\"${GITHUB_SHA}\",\"clearCache\":\"do_not_clear\",\"deployMode\":\"build_and_deploy\"}"
+          }
+
+          api_deploy="$(trigger_deploy "${RENDER_API_SERVICE_ID}")"
+          web_deploy="$(trigger_deploy "${RENDER_WEB_SERVICE_ID}")"
+          api_deploy_id="$(jq -r '.id // empty' <<<"${api_deploy}")"
+          web_deploy_id="$(jq -r '.id // empty' <<<"${web_deploy}")"
+
+          test -n "${api_deploy_id}"
+          test -n "${web_deploy_id}"
+          echo "api_deploy_id=${api_deploy_id}" >> "${GITHUB_OUTPUT}"
+          echo "web_deploy_id=${web_deploy_id}" >> "${GITHUB_OUTPUT}"
+
+      - name: Wait for Render deployments
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_API_SERVICE_ID: ${{ secrets.RENDER_API_SERVICE_ID }}
+          RENDER_WEB_SERVICE_ID: ${{ secrets.RENDER_WEB_SERVICE_ID }}
+          API_DEPLOY_ID: ${{ steps.trigger.outputs.api_deploy_id }}
+          WEB_DEPLOY_ID: ${{ steps.trigger.outputs.web_deploy_id }}
+        run: |
+          set -euo pipefail
+
+          wait_for_deploy() {
+            local service_id="$1"
+            local deploy_id="$2"
+            local status
+
+            for attempt in $(seq 1 80); do
+              status="$(curl --fail-with-body --silent --show-error \
+                --url "https://api.render.com/v1/services/${service_id}/deploys/${deploy_id}" \
+                --header "Authorization: Bearer ${RENDER_API_KEY}" \
+                --header 'Accept: application/json' | jq -r '.status')"
+              echo "${service_id}: ${status}"
+              case "${status}" in
+                live) return 0 ;;
+                build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
+                  return 1
+                  ;;
+              esac
+              sleep 15
+            done
+            return 1
+          }
+
+          wait_for_deploy "${RENDER_API_SERVICE_ID}" "${API_DEPLOY_ID}" &
+          api_wait_pid=$!
+          wait_for_deploy "${RENDER_WEB_SERVICE_ID}" "${WEB_DEPLOY_ID}" &
+          web_wait_pid=$!
+          wait "${api_wait_pid}"
+          wait "${web_wait_pid}"
+
+      - name: Smoke-test deployed services
+        env:
+          DEMO_API_URL: ${{ vars.DEMO_API_URL }}
+          DEMO_WEB_URL: ${{ vars.DEMO_WEB_URL }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 10 --retry-delay 10 \
+            "${DEMO_API_URL}/health/live"
+          curl --fail --silent --show-error --retry 10 --retry-delay 10 \
+            "${DEMO_WEB_URL}/"
