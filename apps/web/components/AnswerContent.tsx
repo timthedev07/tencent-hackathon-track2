@@ -11,7 +11,6 @@ type AnswerToken = {
   citation?: Citation
 }
 
-const LEGACY_ISSUE_KEY = /(?<![A-Za-z0-9_-])[A-Z][A-Z0-9_]*-\d+(?![A-Za-z0-9_-])/g
 const DATE_OR_TIME =
   /^(?:\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?|\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}|(?:[01]?\d|2[0-3]):[0-5]\d(?:\s?(?:am|pm))?)$/i
 const BASE_TOKEN_SOURCE = String.raw`https?:\/\/[^\s<>()\]]+|\[?evi_[0-9a-f]{6,}\]?|\b\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?\b|\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}\b|\b(?:[01]?\d|2[0-3]):[0-5]\d(?:\s?(?:am|pm))?\b`
@@ -28,10 +27,6 @@ function safeExternalUrl(value: string | null): string | undefined {
 
 function shortEvidenceId(evidenceId: string): string {
   return `evi_${evidenceId.replaceAll('-', '').slice(0, 12)}`
-}
-
-function issueKeys(value: string): string[] {
-  return [...value.matchAll(LEGACY_ISSUE_KEY)].map(([key]) => key)
 }
 
 function escapeForRegex(value: string): string {
@@ -53,7 +48,6 @@ function buildJiraLinkResolver(citations: Citation[]): (key: string) => string |
     const href = safeExternalUrl(citation.url)
     if (!href) continue
     if (citation.itemKey) links.set(citation.itemKey, href)
-    for (const key of issueKeys(`${citation.label ?? ''} ${href}`)) links.set(key, href)
   }
   return (key) => links.get(key)
 }
