@@ -46,7 +46,7 @@ export class ApiClientError extends Error {
 }
 
 export interface CreateQueryResponse { queryId: string; status: string }
-export interface Citation { evidenceId: string; source: string; label: string | null; url: string | null }
+export interface Citation { evidenceId: string; referenceId?: string | null; itemKey?: string | null; source: string; label: string | null; url: string | null }
 export interface QueryResult {
   queryId: string; status: string; answer: string | null;
   citations: Citation[]; partialSourceWarnings: { source: string; reason: string }[];

@@ -216,24 +216,31 @@ async def get_result(query_id: UUID, user: AuthenticatedUser) -> dict:
                 answer = decrypted_answer
 
         # Load citations from evidence items
-        from app.persistence.models import EvidenceItem
+        from app.persistence.models import EvidenceItem, SourceObject
 
         evidence_stmt = (
-            select(EvidenceItem)
+            select(EvidenceItem, SourceObject.external_object_id)
+            .join(SourceObject, EvidenceItem.source_object_id == SourceObject.id)
             .where(EvidenceItem.query_id == query_id)
             .order_by(EvidenceItem.rank)
         )
         evidence_result = await session.execute(evidence_stmt)
-        evidence_items = evidence_result.scalars().all()
+        evidence_items = evidence_result.all()
 
         citations = [
             {
-                "evidenceId": str(e.id),
-                "source": e.source,
-                "label": e.title_snapshot,
-                "url": e.canonical_url,
+                "evidenceId": str(evidence.id),
+                "referenceId": (
+                    f"evi_{str(evidence.model_evidence_id).replace('-', '')[:12]}"
+                    if evidence.model_evidence_id
+                    else None
+                ),
+                "itemKey": str(external_object_id) if evidence.source == "jira" else None,
+                "source": evidence.source,
+                "label": evidence.title_snapshot,
+                "url": evidence.canonical_url,
             }
-            for e in evidence_items
+            for evidence, external_object_id in evidence_items
         ]
 
         partial_warnings = []

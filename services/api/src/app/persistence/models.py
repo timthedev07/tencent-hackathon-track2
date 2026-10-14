@@ -535,6 +535,7 @@ class EvidenceItem(Base):
         PGUUID(as_uuid=True), ForeignKey("source_objects.id"), nullable=False
     )
     source_revision: Mapped[str] = mapped_column(Text, nullable=False)
+    model_evidence_id: Mapped[str | None] = mapped_column(PGUUID(as_uuid=True))
     source: Mapped[str] = mapped_column(Text, nullable=False)
     title_snapshot: Mapped[str | None] = mapped_column(Text)
     canonical_url: Mapped[str | None] = mapped_column(Text)

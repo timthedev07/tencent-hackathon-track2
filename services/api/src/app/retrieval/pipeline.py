@@ -300,6 +300,7 @@ async def _audit_commit(
                 chunk_id=ev.chunk_id,
                 source_object_id=ev.source_object_id,
                 source_revision=ev.source_revision,
+                model_evidence_id=ev.evidence_id,
                 source=ev.source.value,
                 title_snapshot=ev.title,
                 canonical_url=ev.canonical_url,

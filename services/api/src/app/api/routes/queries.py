@@ -55,6 +55,8 @@ class CreateQueryResponse(BaseModel):
 
 class Citation(BaseModel):
     evidenceId: str
+    referenceId: str | None = None
+    itemKey: str | None = None
     source: str
     label: str | None = None
     url: str | None = None

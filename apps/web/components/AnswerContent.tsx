@@ -11,11 +11,10 @@ type AnswerToken = {
   citation?: Citation
 }
 
-const ISSUE_KEY = /(?<![A-Za-z0-9_-])[A-Z][A-Z0-9]{1,9}-\d+(?![A-Za-z0-9_-])/g
+const LEGACY_ISSUE_KEY = /(?<![A-Za-z0-9_-])[A-Z][A-Z0-9_]*-\d+(?![A-Za-z0-9_-])/g
 const DATE_OR_TIME =
   /^(?:\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?|\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}|(?:[01]?\d|2[0-3]):[0-5]\d(?:\s?(?:am|pm))?)$/i
-const TOKEN =
-  /https?:\/\/[^\s<>()\]]+|\[?evi_[0-9a-f]{6,}\]?|(?<![A-Za-z0-9_-])[A-Z][A-Z0-9]{1,9}-\d+(?![A-Za-z0-9_-])|\b\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?\b|\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}\b|\b(?:[01]?\d|2[0-3]):[0-5]\d(?:\s?(?:am|pm))?\b/gi
+const BASE_TOKEN_SOURCE = String.raw`https?:\/\/[^\s<>()\]]+|\[?evi_[0-9a-f]{6,}\]?|\b\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?\b|\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}\b|\b(?:[01]?\d|2[0-3]):[0-5]\d(?:\s?(?:am|pm))?\b`
 
 function safeExternalUrl(value: string | null): string | undefined {
   if (!value) return undefined
@@ -32,7 +31,19 @@ function shortEvidenceId(evidenceId: string): string {
 }
 
 function issueKeys(value: string): string[] {
-  return [...value.matchAll(ISSUE_KEY)].map(([key]) => key)
+  return [...value.matchAll(LEGACY_ISSUE_KEY)].map(([key]) => key)
+}
+
+function escapeForRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function tokenPattern(jiraKeys: Iterable<string>): RegExp {
+  const exactKeys = [...jiraKeys]
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)
+    .map((key) => `(?<![A-Za-z0-9_-])${escapeForRegex(key)}(?![A-Za-z0-9_-])`)
+  return new RegExp(exactKeys.length ? `${exactKeys.join('|')}|${BASE_TOKEN_SOURCE}` : BASE_TOKEN_SOURCE, 'gi')
 }
 
 function buildJiraLinkResolver(citations: Citation[]): (key: string) => string | undefined {
@@ -41,6 +52,7 @@ function buildJiraLinkResolver(citations: Citation[]): (key: string) => string |
   for (const citation of citations.filter((item) => item.source === 'jira')) {
     const href = safeExternalUrl(citation.url)
     if (!href) continue
+    if (citation.itemKey) links.set(citation.itemKey, href)
     for (const key of issueKeys(`${citation.label ?? ''} ${href}`)) links.set(key, href)
   }
   return (key) => links.get(key)
@@ -60,10 +72,8 @@ function tokenFor(
     const href = safeExternalUrl(value)
     return href ? { kind: 'url', value, href } : null
   }
-  if (/^[A-Z][A-Z0-9]{1,9}-\d+$/.test(value)) {
-    const href = jiraHref(value)
-    return href ? { kind: 'jira', value, href } : null
-  }
+  const jiraLink = jiraHref(value)
+  if (jiraLink) return { kind: 'jira', value, href: jiraLink }
   return DATE_OR_TIME.test(value) ? { kind: 'date', value } : null
 }
 
@@ -121,13 +131,14 @@ function Badge({ token }: { token: AnswerToken }) {
 
 export function AnswerContent({ answer, citations }: { answer: string; citations: Citation[] }) {
   const evidence = new Map(
-    citations.map((citation) => [shortEvidenceId(citation.evidenceId), citation]),
+    citations.map((citation) => [citation.referenceId ?? shortEvidenceId(citation.evidenceId), citation]),
   )
   const jiraHref = buildJiraLinkResolver(citations)
+  const tokens = tokenPattern(citations.filter((citation) => citation.source === 'jira' && safeExternalUrl(citation.url)).flatMap((citation) => citation.itemKey ? [citation.itemKey] : []))
   const pieces: React.ReactNode[] = []
   let cursor = 0
 
-  for (const match of answer.matchAll(TOKEN)) {
+  for (const match of answer.matchAll(tokens)) {
     const value = match[0]
     const index = match.index ?? 0
     if (index > cursor) pieces.push(answer.slice(cursor, index))
