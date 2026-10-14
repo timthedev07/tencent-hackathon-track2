@@ -166,6 +166,7 @@ As `DRIVE-OWNER`:
 1. Create two separate top-level folders: `Internal Brain Demo - Shared` and `Internal Brain Demo - Restricted`. Do not put the restricted folder inside the shared folder; Drive permissions can be inherited from a parent.
 2. Share `Internal Brain Demo - Shared` with `BOB` as Reader. Keep `DRIVE-OWNER` as owner.
 3. Share `Internal Brain Demo - Restricted` only with `CAROL` as Reader. Confirm `BOB` has no direct or inherited access.
+4. Copy the URL of each folder. In Relay **Settings**, connect Google Drive, paste the permitted links into **Allowed folder links**, and choose **Save scope and sync**. Relay extracts the folder IDs and fails closed until at least one allowed root folder is configured; files outside these folders, including personal Drive content, are not indexed.
 4. Record document IDs, URLs and the exact sharing change times.
 
 ## 6. Create the test corpus

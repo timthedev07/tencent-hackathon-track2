@@ -35,7 +35,7 @@ export function Citation({ citation }: { citation: CitationType }) {
       </div>
       {accessRevoked && <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-200/10 bg-amber-300/[.06] p-3 text-xs text-white/55"><Lock size={15} className="mt-0.5 flex-none text-amber-200" /><span><strong className="font-semibold text-amber-100">Access revoked.</strong> You no longer have access to this content. It was rechecked when you opened the citation.</span></div>}
       {error && <p className="mt-3 text-xs text-rose-200">{error}</p>}
-      {isOpen && evidenceText && <div className="mt-4 rounded-lg border border-teal-200/10 bg-teal-300/[.045] p-4"><div className="mb-2 flex items-center gap-2 text-xs font-semibold text-teal-200/75"><ShieldCheck size={12} /> Authorised evidence</div><p className="border-l border-teal-200/30 pl-3 text-sm leading-6 text-white/70">{evidenceText}</p></div>}
+      {isOpen && evidenceText && <div className="mt-4 rounded-lg border border-teal-200/10 bg-teal-300/[.045] p-4"><div className="mb-2 flex items-center gap-2 text-xs font-semibold text-teal-200/75"><ShieldCheck size={12} /> Authorised evidence</div><p className="rounded-md border border-teal-200/20 p-3 text-sm leading-6 text-white/70">{evidenceText}</p></div>}
     </GlassPanel>
   );
 }

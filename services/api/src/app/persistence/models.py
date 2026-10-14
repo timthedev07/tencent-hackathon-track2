@@ -93,6 +93,9 @@ class SourceConnection(Base):  # type: ignore[misc]
     source: Mapped[str] = mapped_column(Text, nullable=False)
     external_workspace_id: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str | None] = mapped_column(Text)
+    scope_config: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa_text("'{}'::jsonb")
+    )
     status: Mapped[str] = mapped_column(Text, nullable=False, default="connected")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
@@ -184,6 +187,9 @@ class SourceObject(Base):
     object_type: Mapped[str] = mapped_column(Text, nullable=False)
     parent_external_id: Mapped[str | None] = mapped_column(Text)
     canonical_url: Mapped[str | None] = mapped_column(Text)
+    provider_metadata: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=sa_text("'{}'::jsonb")
+    )
     current_revision: Mapped[str | None] = mapped_column(Text)
     current_version_id: Mapped[str | None] = mapped_column(PGUUID(as_uuid=True))
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

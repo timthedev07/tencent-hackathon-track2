@@ -87,6 +87,8 @@ export interface ConnectionStatus {
   connected: boolean;
   display_name: string | null;
   connectionId: string | null;
+  rootFolderIds: string[];
+  rootFolderLinks: string[];
 }
 export interface ConnectionsResponse {
   connections: ConnectionStatus[];
@@ -108,6 +110,39 @@ export async function restartConnection(connectionId: string): Promise<SyncConne
   return apiFetch<SyncConnectionResponse>(`/oauth/connections/${connectionId}/restart`, {
     method: 'POST',
   });
+}
+
+export interface GoogleDriveScopeResponse {
+  connectionId: string;
+  rootFolderIds: string[];
+  rootFolderLinks: string[];
+  syncRequired: boolean;
+}
+
+export interface GoogleDriveFolderMetadataResponse {
+  folders: { id: string; link: string; name: string | null }[];
+}
+
+export async function updateGoogleDriveScope(
+  connectionId: string,
+  rootFolderLinks: string[],
+): Promise<GoogleDriveScopeResponse> {
+  return apiFetch<GoogleDriveScopeResponse>(
+    `/oauth/connections/${connectionId}/google-drive-scope`,
+    { method: 'PUT', body: JSON.stringify({ rootFolderLinks }) },
+  );
+}
+
+export async function getGoogleDriveFolderMetadata(
+  connectionId: string,
+  folderLinks: string[],
+): Promise<GoogleDriveFolderMetadataResponse> {
+  const query = folderLinks
+    .map((link) => `folderLink=${encodeURIComponent(link)}`)
+    .join('&');
+  return apiFetch<GoogleDriveFolderMetadataResponse>(
+    `/oauth/connections/${connectionId}/google-drive-folders${query ? `?${query}` : ''}`,
+  );
 }
 
 export interface BackfillRunStatus {

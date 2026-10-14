@@ -84,6 +84,7 @@ async def _run_reconciliation(source_filter: str | None = None) -> dict[str, Any
                     "source": context.connection.source.value,
                     "externalObjectId": external_id,
                     "sourceRevision": change.get("source_revision"),
+                    "providerMetadata": change.get("provider_metadata", {}),
                 }
                 if change.get("change_type") in {"deleted", "removed"}:
                     process_deletion.delay(message)  # type: ignore[union-attr]

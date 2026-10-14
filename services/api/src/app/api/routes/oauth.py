@@ -27,8 +27,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
-from sqlalchemy import func, select
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_authenticated_user
@@ -71,10 +71,59 @@ class ConnectionStatus(BaseModel):
     connected: bool
     display_name: str | None = None
     connectionId: str | None = None
+    rootFolderIds: list[str] = Field(default_factory=list)
+    rootFolderLinks: list[str] = Field(default_factory=list)
 
 
 class ConnectionsResponse(BaseModel):
     connections: list[ConnectionStatus]
+
+
+class GoogleDriveScopeRequest(BaseModel):
+    rootFolderLinks: list[str] = Field(min_length=1)
+
+    @field_validator("rootFolderLinks")
+    @classmethod
+    def validate_root_folder_links(cls, value: list[str]) -> list[str]:
+        from app.settings import get_settings
+
+        cleaned = list(dict.fromkeys(item.strip() for item in value if item.strip()))
+        if not cleaned:
+            raise ValueError("At least one Google Drive root folder ID is required.")
+        if len(cleaned) > get_settings().GOOGLE_DRIVE_MAX_SCOPE_ROOTS:
+            raise ValueError(
+                "A maximum of "
+                f"{get_settings().GOOGLE_DRIVE_MAX_SCOPE_ROOTS} root folders is supported."
+            )
+        from app.connectors.google_drive import parse_folder_id
+
+        try:
+            [parse_folder_id(item) for item in cleaned]
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return cleaned
+
+    def root_folder_ids(self) -> list[str]:
+        from app.connectors.google_drive import parse_folder_id
+
+        return list(dict.fromkeys(parse_folder_id(item) for item in self.rootFolderLinks))
+
+
+class GoogleDriveScopeResponse(BaseModel):
+    connectionId: str
+    rootFolderIds: list[str]
+    rootFolderLinks: list[str]
+    syncRequired: bool = True
+
+
+class GoogleDriveFolderMetadata(BaseModel):
+    id: str
+    link: str
+    name: str | None = None
+
+
+class GoogleDriveFolderMetadataResponse(BaseModel):
+    folders: list[GoogleDriveFolderMetadata]
 
 
 class SyncConnectionResponse(BaseModel):
@@ -149,6 +198,15 @@ async def list_connections(
             conn = conn_result.scalar_one_or_none()
             if conn is not None:
                 display_name = conn.display_name
+                root_folder_ids = (
+                    conn.scope_config.get("allowed_root_folder_ids", [])
+                    if source == Source.GOOGLE_DRIVE
+                    else []
+                )
+            else:
+                root_folder_ids = []
+        else:
+            root_folder_ids = []
 
         result_list.append(
             ConnectionStatus(
@@ -156,10 +214,143 @@ async def list_connections(
                 connected=link is not None,
                 display_name=display_name,
                 connectionId=str(link.source_connection_id) if link else None,
+                rootFolderIds=(
+                    [value for value in root_folder_ids if isinstance(value, str)]
+                    if isinstance(root_folder_ids, list)
+                    else []
+                ),
+                rootFolderLinks=(
+                    [
+                        f"https://drive.google.com/drive/folders/{value}"
+                        for value in root_folder_ids
+                        if isinstance(value, str)
+                    ]
+                    if isinstance(root_folder_ids, list)
+                    else []
+                ),
             )
         )
 
     return ConnectionsResponse(connections=result_list)
+
+
+@router.put(
+    "/connections/{connection_id}/google-drive-scope",
+    response_model=GoogleDriveScopeResponse,
+)
+async def configure_google_drive_scope(
+    connection_id: UUID,
+    request: GoogleDriveScopeRequest,
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> GoogleDriveScopeResponse:
+    """Set the allowed Google Drive root folders and fail closed old imports."""
+    statement = (
+        select(SourceConnection)
+        .join(IdentityLink, IdentityLink.source_connection_id == SourceConnection.id)
+        .where(
+            SourceConnection.id == connection_id,
+            SourceConnection.tenant_id == user.tenant_id,
+            SourceConnection.source == Source.GOOGLE_DRIVE.value,
+            SourceConnection.status == "connected",
+            IdentityLink.tenant_id == user.tenant_id,
+            IdentityLink.user_id == user.user_id,
+            IdentityLink.status == "verified",
+        )
+        .limit(1)
+    )
+    connection = await session.scalar(statement)
+    if connection is None:
+        raise _connection_error(
+            status.HTTP_404_NOT_FOUND,
+            "SOURCE_CONNECTION_NOT_FOUND",
+            "Google Drive connection not found.",
+        )
+
+    connection.scope_config = {
+        **(connection.scope_config or {}),
+        "allowed_root_folder_ids": request.root_folder_ids(),
+    }
+    # Existing objects were imported before this scope was set, or under an
+    # earlier scope. They remain auditable but cannot be queried until a sync
+    # reauthorises them through the scoped scanner.
+    await session.execute(
+        update(SourceObject)
+        .where(
+            SourceObject.tenant_id == user.tenant_id,
+            SourceObject.source_connection_id == connection_id,
+            SourceObject.source == Source.GOOGLE_DRIVE.value,
+        )
+        .values(is_queryable=False)
+    )
+    await session.commit()
+    return GoogleDriveScopeResponse(
+        connectionId=str(connection_id),
+        rootFolderIds=request.root_folder_ids(),
+        rootFolderLinks=request.rootFolderLinks,
+    )
+
+
+@router.get(
+    "/connections/{connection_id}/google-drive-folders",
+    response_model=GoogleDriveFolderMetadataResponse,
+)
+async def get_google_drive_folder_metadata(
+    connection_id: UUID,
+    folder_link: list[str] = Query(default_factory=list, alias="folderLink"),
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    session: AsyncSession = Depends(get_session),
+) -> GoogleDriveFolderMetadataResponse:
+    """Resolve visible names for folder links while keeping names optional."""
+    statement = (
+        select(SourceConnection)
+        .join(IdentityLink, IdentityLink.source_connection_id == SourceConnection.id)
+        .where(
+            SourceConnection.id == connection_id,
+            SourceConnection.tenant_id == user.tenant_id,
+            SourceConnection.source == Source.GOOGLE_DRIVE.value,
+            SourceConnection.status == "connected",
+            IdentityLink.tenant_id == user.tenant_id,
+            IdentityLink.user_id == user.user_id,
+            IdentityLink.status == "verified",
+        )
+        .limit(1)
+    )
+    connection = await session.scalar(statement)
+    if connection is None:
+        raise _connection_error(
+            status.HTTP_404_NOT_FOUND,
+            "SOURCE_CONNECTION_NOT_FOUND",
+            "Google Drive connection not found.",
+        )
+
+    from app.authorisation.live_check import _resolve_delegated_credential
+    from app.connectors.google_drive import GoogleDriveConnector, parse_folder_id
+
+    folder_entries: list[tuple[str, str]] = []
+    for value in folder_link[: get_settings().GOOGLE_DRIVE_MAX_SCOPE_ROOTS]:
+        try:
+            folder_id = parse_folder_id(value)
+        except ValueError:
+            continue
+        if not any(folder_id == item[0] for item in folder_entries):
+            folder_entries.append((folder_id, value))
+
+    names: dict[str, str] = {}
+    credential = await _resolve_delegated_credential(session, user, Source.GOOGLE_DRIVE)
+    folder_ids = [folder_id for folder_id, _link in folder_entries]
+    if credential is not None and folder_ids:
+        names = await GoogleDriveConnector().folder_names(folder_ids, credential)
+    return GoogleDriveFolderMetadataResponse(
+        folders=[
+            GoogleDriveFolderMetadata(
+                id=folder_id,
+                link=link,
+                name=names.get(folder_id),
+            )
+            for folder_id, link in folder_entries
+        ]
+    )
 
 
 @router.post(

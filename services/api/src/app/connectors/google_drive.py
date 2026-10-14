@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
+from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from app.auth.oidc import AuthenticatedUser
-from app.connectors.errors import PermanentError
+from app.connectors.errors import ConnectorError, PermanentError
 from app.connectors.http import json_body, request
-from app.connectors.parsing import next_cursor, object_list, strip_html
+from app.connectors.parsing import object_list, strip_html
 from app.domain.types import (
     AccessCheckResult,
     AccessOutcome,
@@ -33,6 +36,10 @@ _EXPORT_MIME_TYPES = frozenset(
     }
 )
 _DIRECT_TEXT_MIME_TYPES = frozenset({"application/json", "application/xml"})
+_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+_SCOPE_ROOT_IDS_KEY = "allowed_root_folder_ids"
+_SCAN_STATE_VERSION = 1
+_SCAN_PAGE_SIZE = 100
 
 
 async def start_google_oauth(user: AuthenticatedUser, oauth_state: str = "") -> str:
@@ -204,40 +211,60 @@ class GoogleDriveConnector:
         credential: DelegatedCredential | None = None,
     ) -> ScanPage:
         credential = _require_credential(credential)
-        params: dict[str, object] = {
-            "pageSize": 100,
-            "q": "trashed = false",
-            "spaces": "drive",
-            "includeItemsFromAllDrives": "true",
-            "supportsAllDrives": "true",
-            "fields": (
-                "nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,"
-                "parents,version,permissions,driveId)"
-            ),
-        }
-        if cursor:
-            params["pageToken"] = cursor
-        response = await request(
-            "GET",
-            "https://www.googleapis.com/drive/v3/files",
-            access_token=credential.access_token,
-            params=params,
-        )
-        payload = json_body(response)
-        files = object_list(payload.get("files"))
-        indexable_files = [
-            item for item in files if isinstance(item, dict) and _is_indexable(item)
-        ]
-        skipped_count = len(files) - len(indexable_files)
-        if skipped_count:
-            logger.info("Skipping unsupported Google Drive files", count=skipped_count)
-        return ScanPage(
-            objects=[
-                _scan_object(item)
-                for item in indexable_files
-            ],
-            next_cursor=next_cursor(payload),
-        )
+        roots = _scope_root_ids(connection)
+        if not roots:
+            logger.warning(
+                "Google Drive scan refused because no folder scope is configured",
+                connection_id=str(connection.id),
+            )
+            return ScanPage(objects=[], next_cursor=None)
+
+        state = _decode_scan_state(cursor, roots)
+        while state["folder_index"] < len(state["folders"]):
+            folder_id = state["folders"][state["folder_index"]]
+            response = await request(
+                "GET",
+                "https://www.googleapis.com/drive/v3/files",
+                access_token=credential.access_token,
+                params=_list_params(
+                    q=_parent_query(folder_id),
+                    page_token=state.get("page_token"),
+                ),
+            )
+            payload = json_body(response)
+            files = [item for item in object_list(payload.get("files")) if isinstance(item, dict)]
+            objects: list[dict[str, object]] = []
+            for item in files:
+                item_id = str(item.get("id") or "")
+                if not item_id:
+                    continue
+                if _is_folder(item):
+                    _add_child_folder(
+                        state,
+                        item_id,
+                        state["folder_roots"].get(folder_id, roots),
+                    )
+                elif _is_indexable(item):
+                    objects.append(
+                        _scan_object(item, state["folder_roots"].get(folder_id, roots))
+                    )
+
+            page_token = payload.get("nextPageToken")
+            if page_token:
+                state["page_token"] = str(page_token)
+                return ScanPage(objects=objects, next_cursor=_encode_scan_state(state))
+
+            state["folder_index"] += 1
+            state["page_token"] = None
+            if objects:
+                next_value = (
+                    _encode_scan_state(state)
+                    if state["folder_index"] < len(state["folders"])
+                    else None
+                )
+                return ScanPage(objects=objects, next_cursor=next_value)
+
+        return ScanPage(objects=[], next_cursor=None)
 
     async def read_changes(
         self,
@@ -246,6 +273,15 @@ class GoogleDriveConnector:
         credential: DelegatedCredential | None = None,
     ) -> ChangePage:
         credential = _require_credential(credential)
+        roots = _scope_root_ids(connection)
+        if not roots:
+            logger.warning(
+                "Google Drive changes ignored because no folder scope is configured",
+                connection_id=str(connection.id),
+            )
+            return ChangePage(changes=[], next_cursor=cursor)
+
+        folder_roots = await _discover_scoped_folders(credential, roots)
         page_token = cursor
         if not page_token:
             start = await request(
@@ -285,8 +321,26 @@ class GoogleDriveConnector:
                         "change_type": "deleted",
                     }
                 )
-            elif isinstance(item.get("file"), dict) and _is_indexable(item["file"]):
-                changes.append(_scan_object(item["file"]))
+            elif isinstance(item.get("file"), dict):
+                file = item["file"]
+                file_id = str(file.get("id") or item.get("fileId") or "")
+                parents = _parent_ids(file.get("parents"))
+                if _is_indexable(file) and set(parents) & set(folder_roots):
+                    roots_for_file = sorted(
+                        root
+                        for parent in parents
+                        for root in folder_roots.get(parent, [])
+                    )
+                    changes.append(_scan_object(file, roots_for_file or roots))
+                elif file_id:
+                    # A moved-out or no-longer-supported object must stop being
+                    # queryable even though Drive did not report a deletion.
+                    changes.append(
+                        {
+                            "external_object_id": file_id,
+                            "change_type": "deleted",
+                        }
+                    )
         next_value = payload.get("nextPageToken") or payload.get("newStartPageToken")
         return ChangePage(
             changes=changes,
@@ -336,6 +390,37 @@ class GoogleDriveConnector:
             permission_principals=_permissions(payload.get("permissions")),
             provider_metadata={"drive_id": payload.get("driveId")},
         )
+
+    async def folder_names(
+        self,
+        folder_ids: list[str],
+        credential: DelegatedCredential | None = None,
+    ) -> dict[str, str]:
+        """Return visible names for folder IDs without exposing folder contents."""
+        credential = _require_credential(credential)
+        names: dict[str, str] = {}
+        for folder_id in folder_ids:
+            try:
+                response = await request(
+                    "GET",
+                    f"https://www.googleapis.com/drive/v3/files/{folder_id}",
+                    access_token=credential.access_token,
+                    params={
+                        "supportsAllDrives": "true",
+                        "fields": "id,name,mimeType,trashed",
+                    },
+                )
+                payload = json_body(response)
+            except ConnectorError:
+                continue
+            if (
+                payload.get("trashed") is not True
+                and payload.get("mimeType") == _FOLDER_MIME_TYPE
+                and isinstance(payload.get("name"), str)
+                and payload["name"]
+            ):
+                names[folder_id] = payload["name"]
+        return names
 
     async def fetch_acl(
         self,
@@ -420,7 +505,200 @@ def _require_credential(credential: DelegatedCredential | None) -> DelegatedCred
     return credential
 
 
-def _scan_object(item: dict[str, object]) -> dict[str, object]:
+def _scope_root_ids(connection: SourceConnection) -> list[str]:
+    configured = connection.scope_config.get(_SCOPE_ROOT_IDS_KEY, [])
+    if not isinstance(configured, list):
+        return []
+    return sorted({value for value in configured if isinstance(value, str) and value})
+
+
+def parse_folder_id(value: str) -> str:
+    """Extract a Google Drive folder ID from a Drive link or raw ID."""
+    candidate = value.strip()
+    if not candidate:
+        raise ValueError("Google Drive folder links must not be empty.")
+    if "://" not in candidate:
+        folder_id = candidate
+    else:
+        parsed = urlparse(candidate)
+        if parsed.scheme != "https" or parsed.netloc.lower() not in {
+            "drive.google.com",
+            "www.drive.google.com",
+        }:
+            raise ValueError("Use a secure Google Drive folder link.")
+        path_parts = [part for part in parsed.path.split("/") if part]
+        folder_id = ""
+        if "folders" in path_parts:
+            folder_index = path_parts.index("folders")
+            if folder_index + 1 < len(path_parts):
+                folder_id = path_parts[folder_index + 1]
+        if not folder_id:
+            folder_id = parse_qs(parsed.query).get("id", [""])[0]
+    if not folder_id or "'" in folder_id or any(char.isspace() for char in folder_id):
+        raise ValueError("The Google Drive folder link does not contain a valid folder ID.")
+    return folder_id
+
+
+def _list_params(*, q: str, page_token: str | None = None) -> dict[str, object]:
+    params: dict[str, object] = {
+        "pageSize": _SCAN_PAGE_SIZE,
+        "q": q,
+        "spaces": "drive",
+        "includeItemsFromAllDrives": "true",
+        "supportsAllDrives": "true",
+        "fields": (
+            "nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,"
+            "parents,version,permissions,driveId)"
+        ),
+    }
+    if page_token:
+        params["pageToken"] = page_token
+    return params
+
+
+def _parent_query(folder_id: str) -> str:
+    # Drive IDs cannot contain a single quote, but escaping keeps this helper
+    # safe if provider identifiers ever change shape.
+    escaped = folder_id.replace("'", "\\'")
+    return f"'{escaped}' in parents and trashed = false"
+
+
+def _decode_scan_state(cursor: str | None, roots: list[str]) -> dict[str, Any]:
+    if not cursor:
+        return {
+            "version": _SCAN_STATE_VERSION,
+            "folders": list(roots),
+            "folder_index": 0,
+            "page_token": None,
+            "seen_folders": list(roots),
+            "folder_roots": {root: [root] for root in roots},
+        }
+    try:
+        value = json.loads(cursor)
+    except (TypeError, json.JSONDecodeError):
+        # Cursors created by the old unscoped scanner were plain Drive page
+        # tokens. Restart safely instead of interpreting them as a folder.
+        return _decode_scan_state(None, roots)
+    if not isinstance(value, dict) or value.get("version") != _SCAN_STATE_VERSION:
+        return _decode_scan_state(None, roots)
+    folders = value.get("folders")
+    folder_index = value.get("folder_index")
+    seen_folders = value.get("seen_folders")
+    folder_roots = value.get("folder_roots")
+    if (
+        not isinstance(folders, list)
+        or not all(isinstance(item, str) and item for item in folders)
+        or not isinstance(folder_index, int)
+        or folder_index < 0
+        or not isinstance(seen_folders, list)
+        or not isinstance(folder_roots, dict)
+    ):
+        return _decode_scan_state(None, roots)
+    for root in roots:
+        if root not in folders:
+            folders.insert(0, root)
+        if root not in seen_folders:
+            seen_folders.append(root)
+        folder_roots.setdefault(root, [root])
+    return {
+        "version": _SCAN_STATE_VERSION,
+        "folders": folders,
+        "folder_index": min(folder_index, len(folders)),
+        "page_token": value.get("page_token") if isinstance(value.get("page_token"), str) else None,
+        "seen_folders": seen_folders,
+        "folder_roots": {
+            str(folder): [str(root) for root in roots_for_folder if isinstance(root, str)]
+            for folder, roots_for_folder in folder_roots.items()
+            if isinstance(roots_for_folder, list)
+        },
+    }
+
+
+def _encode_scan_state(state: dict[str, Any]) -> str:
+    return json.dumps(state, separators=(",", ":"), sort_keys=True)
+
+
+def _add_child_folder(
+    state: dict[str, Any], folder_id: str, root_ids: list[str]
+) -> None:
+    seen_folders = state["seen_folders"]
+    folder_roots = state["folder_roots"]
+    if folder_id not in seen_folders:
+        seen_folders.append(folder_id)
+        state["folders"].append(folder_id)
+    existing = set(folder_roots.get(folder_id, []))
+    folder_roots[folder_id] = sorted(existing | set(root_ids))
+
+
+async def _discover_scoped_folders(
+    credential: DelegatedCredential,
+    roots: list[str],
+) -> dict[str, list[str]]:
+    """Return every folder beneath the configured roots and its root ancestry."""
+    folder_roots: dict[str, list[str]] = {root: [root] for root in roots}
+    queue = list(roots)
+    seen = set(roots)
+    while queue:
+        parent_id = queue.pop(0)
+        response = await request(
+            "GET",
+            "https://www.googleapis.com/drive/v3/files",
+            access_token=credential.access_token,
+            params=_list_params(q=_parent_query(parent_id)),
+        )
+        payload = json_body(response)
+        for item in object_list(payload.get("files")):
+            if not isinstance(item, dict) or not _is_folder(item):
+                continue
+            child_id = str(item.get("id") or "")
+            if not child_id:
+                continue
+            child_roots = folder_roots.get(parent_id, roots)
+            folder_roots[child_id] = sorted(
+                set(folder_roots.get(child_id, [])) | set(child_roots)
+            )
+            if child_id not in seen:
+                seen.add(child_id)
+                queue.append(child_id)
+        next_page = payload.get("nextPageToken")
+        while next_page:
+            response = await request(
+                "GET",
+                "https://www.googleapis.com/drive/v3/files",
+                access_token=credential.access_token,
+                params=_list_params(q=_parent_query(parent_id), page_token=str(next_page)),
+            )
+            payload = json_body(response)
+            for item in object_list(payload.get("files")):
+                if not isinstance(item, dict) or not _is_folder(item):
+                    continue
+                child_id = str(item.get("id") or "")
+                if not child_id:
+                    continue
+                child_roots = folder_roots.get(parent_id, roots)
+                folder_roots[child_id] = sorted(
+                    set(folder_roots.get(child_id, [])) | set(child_roots)
+                )
+                if child_id not in seen:
+                    seen.add(child_id)
+                    queue.append(child_id)
+            next_page = payload.get("nextPageToken")
+    return folder_roots
+
+
+def _is_folder(item: dict[str, object]) -> bool:
+    return str(item.get("mimeType") or "") == _FOLDER_MIME_TYPE
+
+
+def _parent_ids(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(parent) for parent in value if isinstance(parent, str) and parent]
+
+
+def _scan_object(
+    item: dict[str, object], scope_root_ids: list[str] | None = None
+) -> dict[str, object]:
     return {
         "external_object_id": str(item.get("id")),
         "object_type": str(item.get("mimeType") or "file"),
@@ -428,7 +706,11 @@ def _scan_object(item: dict[str, object]) -> dict[str, object]:
         "canonical_url": str(item.get("webViewLink")) if item.get("webViewLink") else None,
         "title": str(item.get("name")) if item.get("name") else None,
         "source_revision": str(item.get("version") or item.get("modifiedTime") or item.get("id")),
-        "provider_metadata": {"drive_id": item.get("driveId")},
+        "provider_metadata": {
+            "drive_id": item.get("driveId"),
+            "parent_ids": _parent_ids(item.get("parents")),
+            "scope_root_ids": sorted(set(scope_root_ids or [])),
+        },
     }
 
 

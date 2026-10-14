@@ -16,6 +16,7 @@ import {
 import { cn } from '@/lib/utils';
 import { clearAuthToken, getAuthToken } from '@/lib/api/client';
 import { GlassPanel } from './GlassPanel';
+import { ThemeToggle } from './ThemeToggle';
 
 const navigation = [
   { href: '/query', label: 'Ask the assistant', icon: MessageSquareText },
@@ -29,6 +30,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [accountLabel, setAccountLabel] = useState('Guest');
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const publicPath = pathname === '/' || pathname === '/login';
+
+  useEffect(() => {
+    const storedTheme = window.localStorage.getItem('relay-theme');
+    const nextTheme = storedTheme === 'light' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = nextTheme;
+  }, []);
 
   useEffect(() => {
     const refresh = window.setTimeout(() => {
@@ -109,6 +116,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="topbar-actions">
             <span className="workspace-name">Acme workspace</span>
+            <ThemeToggle />
             <div className="account-wrap">
               <button className="account-button" onClick={() => setAccountMenuOpen((open) => !open)} aria-expanded={accountMenuOpen}>
                 <span className="account-avatar"><UserRound size={15} /></span>

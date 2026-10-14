@@ -84,6 +84,13 @@ async def _fetch_source_object(message: dict[str, Any]) -> dict[str, Any]:
             return {"status": "not_found", "source": source.value}
         raise ValueError(f"SOURCE_FETCH_{result.outcome.value.upper()}")
 
+    scanned_metadata = message.get("providerMetadata")
+    if isinstance(scanned_metadata, dict):
+        result.provider_metadata = {
+            **scanned_metadata,
+            **result.provider_metadata,
+        }
+
     source_object_id, version_id, duplicate = await _persist_fetched(
         tenant_id,
         connection_id,
@@ -178,6 +185,10 @@ async def _persist_fetched(
             await session.flush()
         else:
             source_object.object_type = result.object_type or source_object.object_type
+        source_object.provider_metadata = {
+            **(source_object.provider_metadata or {}),
+            **(result.provider_metadata or {}),
+        }
         source_object.parent_external_id = result.parent_external_id
         source_object.canonical_url = result.canonical_url
         source_object.is_deleted = False

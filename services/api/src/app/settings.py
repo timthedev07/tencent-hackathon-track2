@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = ""
+    GOOGLE_DRIVE_MAX_SCOPE_ROOTS: int = 20
 
     # ── Models ─────────────────────────────────────────────────────
     MODEL_PROVIDER: str = "openai"

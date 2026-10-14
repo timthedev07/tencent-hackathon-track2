@@ -7,11 +7,16 @@ import {
   Cloud,
   ExternalLink,
   FileText,
+  FolderOpen,
   Link2,
   Loader2,
   MessageCircle,
+  Plus,
   RefreshCw,
+  Settings2,
   ShieldCheck,
+  Trash2,
+  X,
   XCircle,
 } from 'lucide-react'
 import { GlassPanel } from '@/components/GlassPanel'
@@ -21,10 +26,12 @@ import {
   getBackfillPreviews,
   getBackfillStatus,
   getConnections,
+  getGoogleDriveFolderMetadata,
   restartConnection,
   startOAuth,
   syncConnection,
   triggerManualBackfill,
+  updateGoogleDriveScope,
   type BackfillPreviewItem,
   type BackfillPreviewResponse,
   type BackfillRunStatus,
@@ -76,6 +83,20 @@ const PROVIDERS: {
   },
 ]
 
+function isGoogleDriveFolderLink(value: string): boolean {
+  try {
+    const url = new URL(value)
+    const isDriveHost = ['drive.google.com', 'www.drive.google.com'].includes(url.hostname)
+    return (
+      url.protocol === 'https:' &&
+      isDriveHost &&
+      (url.pathname.includes('/folders/') || url.searchParams.has('id'))
+    )
+  } catch {
+    return false
+  }
+}
+
 function SettingsContent() {
   const searchParams = useSearchParams()
   const [error, setError] = useState<string | null>(null)
@@ -88,7 +109,17 @@ function SettingsContent() {
   const [syncRuns, setSyncRuns] = useState<Record<string, BackfillRunStatus>>({})
   const [previews, setPreviews] = useState<BackfillPreviewResponse | null>(null)
   const [refreshingPreviews, setRefreshingPreviews] = useState(false)
+  const [driveRootFolderLinks, setDriveRootFolderLinks] = useState('')
+  const [savingDriveScope, setSavingDriveScope] = useState(false)
+  const [driveScopeModalOpen, setDriveScopeModalOpen] = useState(false)
+  const [driveScopeDraftLinks, setDriveScopeDraftLinks] = useState<string[]>([])
+  const [driveFolderNames, setDriveFolderNames] = useState<Record<string, string>>({})
+  const [loadingDriveFolderNames, setLoadingDriveFolderNames] = useState(false)
+  const [driveScopeInput, setDriveScopeInput] = useState('')
+  const [driveScopeInputError, setDriveScopeInputError] = useState<string | null>(null)
   const activeRunIds = useRef(new Set<string>())
+  const driveScopeInputRef = useRef<HTMLInputElement>(null)
+  const driveScopeTriggerRef = useRef<HTMLButtonElement>(null)
 
   const refreshConnections = useCallback(async () => {
     try {
@@ -96,6 +127,8 @@ function SettingsContent() {
       setConnections(
         Object.fromEntries(data.connections.map((connection) => [connection.source, connection])),
       )
+      const drive = data.connections.find((connection) => connection.source === 'google_drive')
+      if (drive) setDriveRootFolderLinks(drive.rootFolderLinks.join('\n'))
     } catch (e) {
       if (e instanceof ApiClientError && e.status === 401)
         setError('Please sign in before connecting sources.')
@@ -154,6 +187,23 @@ function SettingsContent() {
     }, 2000)
     return () => window.clearInterval(poll)
   }, [refreshBackfillStatus, syncRuns])
+  useEffect(() => {
+    if (!driveScopeModalOpen) return
+    const previousFocus = document.activeElement as HTMLElement | null
+    const previousOverflow = document.body.style.overflow
+    const focusTimer = window.setTimeout(() => driveScopeInputRef.current?.focus(), 0)
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !savingDriveScope) setDriveScopeModalOpen(false)
+    }
+    document.body.style.overflow = 'hidden'
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.clearTimeout(focusTimer)
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', handleKeyDown)
+      window.setTimeout(() => previousFocus?.focus(), 0)
+    }
+  }, [driveScopeModalOpen, savingDriveScope])
   useEffect(() => {
     const status = searchParams.get('status')
     const source = searchParams.get('source')
@@ -232,10 +282,120 @@ function SettingsContent() {
     }
   }
 
+  async function resolveDriveFolderNames(connectionId: string, links: string[]) {
+    if (links.length === 0) return
+    setLoadingDriveFolderNames(true)
+    try {
+      const response = await getGoogleDriveFolderMetadata(connectionId, links)
+      const resolvedNames = Object.fromEntries(
+        response.folders
+          .filter((folder): folder is typeof folder & { name: string } => Boolean(folder.name))
+          .map((folder) => [folder.link, folder.name]),
+      )
+      setDriveFolderNames((current) => ({ ...current, ...resolvedNames }))
+    } catch {
+      // Folder links remain editable when Drive metadata cannot be loaded.
+    } finally {
+      setLoadingDriveFolderNames(false)
+    }
+  }
+
+  function openDriveScopeModal(connection: ConnectionStatus & { connectionId: string }) {
+    setDriveScopeDraftLinks(connection.rootFolderLinks)
+    setDriveFolderNames({})
+    setDriveScopeInput('')
+    setDriveScopeInputError(null)
+    setDriveScopeModalOpen(true)
+    void resolveDriveFolderNames(connection.connectionId, connection.rootFolderLinks)
+  }
+
+  function addDriveScopeLink(connectionId: string | null) {
+    const candidates = driveScopeInput
+      .split(/[\n,]+/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+    if (candidates.length === 0) return
+    const invalidLink = candidates.find((value) => !isGoogleDriveFolderLink(value))
+    if (invalidLink) {
+      setDriveScopeInputError('Use an https://drive.google.com folder link.')
+      return
+    }
+    setDriveScopeDraftLinks((current) => [...new Set([...current, ...candidates])])
+    setDriveScopeInput('')
+    setDriveScopeInputError(null)
+    if (connectionId) void resolveDriveFolderNames(connectionId, candidates)
+  }
+
+  async function handleSaveDriveScope(connectionId: string, links?: string[]) {
+    const rootFolderLinks = [
+      ...new Set(
+        (links ?? driveRootFolderLinks.split(/[\n,]+/))
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    ]
+    setError(null)
+    setSuccess(null)
+    if (rootFolderLinks.length === 0) {
+      setError('Paste at least one Google Drive folder link before saving the scope.')
+      return false
+    }
+    setSavingDriveScope(true)
+    try {
+      await updateGoogleDriveScope(connectionId, rootFolderLinks)
+      void refreshConnections()
+      try {
+        await restartConnection(connectionId)
+        setSuccess('Google Drive scope saved. A scoped import has been queued.')
+        void refreshBackfillStatus()
+      } catch (e) {
+        const reason =
+          e instanceof ApiClientError
+            ? e.message
+            : e instanceof Error
+              ? e.message
+              : 'The sync could not be queued.'
+        setSuccess('Google Drive scope saved, but the import could not be queued.')
+        setError(
+          `Scope saved. ${reason} Reconnect Google Drive, then sync again if authorisation has expired.`,
+        )
+      }
+    } catch (e) {
+      const reason =
+        e instanceof ApiClientError
+          ? e.message
+          : e instanceof Error
+            ? e.message
+            : 'The API request failed.'
+      setError(`Failed to save the Google Drive scope: ${reason}`)
+      return false
+    } finally {
+      setSavingDriveScope(false)
+    }
+    return true
+  }
+
+  async function handleSaveDriveScopeModal(connectionId: string) {
+    const saved = await handleSaveDriveScope(connectionId, driveScopeDraftLinks)
+    if (saved) {
+      setDriveRootFolderLinks(driveScopeDraftLinks.join('\n'))
+      setDriveScopeModalOpen(false)
+    }
+  }
+
   const hasToken = Boolean(getAuthToken())
   const connectedCount = PROVIDERS.filter((provider) =>
     provider.sources.some((source) => connections[source]?.connected),
   ).length
+  const googleConnection = connections.google_drive
+  const googleConnectionId =
+    googleConnection?.connected && googleConnection.connectionId
+      ? googleConnection.connectionId
+      : null
+  const driveScopeLinks = driveRootFolderLinks
+    .split(/[\n,]+/)
+    .map((value) => value.trim())
+    .filter(Boolean)
 
   if (loading) return <SettingsLoading />
 
@@ -348,6 +508,34 @@ function SettingsContent() {
                     <span>Connect this source to make its content searchable.</span>
                   </div>
                 )}
+                {provider.key === 'google' && connected && syncableConnections[0] && (
+                  <div className="scope-summary mt-4">
+                    <div className="scope-summary-head">
+                      <div className="scope-summary-icon">
+                        <FolderOpen size={15} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="scope-summary-label">Search boundary</p>
+                        <p className="scope-summary-value">
+                          {driveScopeLinks.length > 0
+                            ? `${driveScopeLinks.length} folder${driveScopeLinks.length === 1 ? '' : 's'} selected`
+                            : 'No folders selected'}
+                        </p>
+                      </div>
+                    </div>
+                    <p className="scope-summary-note">
+                      Relay searches these folders and everything nested inside them.
+                    </p>
+                    <button
+                      ref={driveScopeTriggerRef}
+                      className="scope-manage-button"
+                      onClick={() => void openDriveScopeModal(syncableConnections[0])}
+                      disabled={!hasToken || savingDriveScope}
+                    >
+                      <Settings2 size={14} /> Manage folders
+                    </button>
+                  </div>
+                )}
                 {connected && <SyncProgress run={syncRun} />}
               </div>
 
@@ -422,6 +610,187 @@ function SettingsContent() {
           )
         })}
       </div>
+
+      {driveScopeModalOpen && googleConnectionId && (
+        <div
+          className="scope-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !savingDriveScope)
+              setDriveScopeModalOpen(false)
+          }}
+        >
+          <section
+            className="scope-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="scope-modal-title"
+            aria-describedby="scope-modal-description"
+          >
+            <div className="scope-modal-header">
+              <div className="scope-modal-heading">
+                <div className="scope-modal-icon">
+                  <FolderOpen size={18} />
+                </div>
+                <div>
+                  <p className="section-kicker text-[10px] font-semibold uppercase tracking-[0.14em]">
+                    Google Drive access
+                  </p>
+                  <h2 id="scope-modal-title" className="scope-modal-title">
+                    Choose searchable folders
+                  </h2>
+                </div>
+              </div>
+              <button
+                className="scope-modal-close"
+                onClick={() => setDriveScopeModalOpen(false)}
+                disabled={savingDriveScope}
+                aria-label="Close folder access dialog"
+              >
+                <X size={17} />
+              </button>
+            </div>
+
+            <div className="scope-modal-body">
+              <p id="scope-modal-description" className="scope-modal-description">
+                Add the Drive folders Relay is allowed to index. Nested folders are included
+                automatically, so one carefully chosen root is usually enough.
+              </p>
+
+              <form
+                className="scope-add-form"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  addDriveScopeLink(googleConnectionId)
+                }}
+              >
+                <label htmlFor="drive-folder-link" className="scope-field-label">
+                  Folder link
+                </label>
+                <div className="scope-add-row">
+                  <div className="scope-input-wrap">
+                    <Link2 size={15} aria-hidden="true" />
+                    <input
+                      ref={driveScopeInputRef}
+                      id="drive-folder-link"
+                      className="scope-link-input"
+                      value={driveScopeInput}
+                      onChange={(event) => {
+                        setDriveScopeInput(event.target.value)
+                        setDriveScopeInputError(null)
+                      }}
+                      placeholder="https://drive.google.com/drive/folders/..."
+                      autoComplete="off"
+                      aria-invalid={Boolean(driveScopeInputError)}
+                      aria-describedby={driveScopeInputError ? 'scope-link-error' : undefined}
+                    />
+                  </div>
+                  <button type="submit" className="scope-add-button">
+                    <Plus size={15} /> Add folder
+                  </button>
+                </div>
+                {driveScopeInputError && (
+                  <p id="scope-link-error" className="scope-field-error" role="alert">
+                    {driveScopeInputError}
+                  </p>
+                )}
+              </form>
+
+              <div className="scope-list-heading">
+                <div>
+                  <p className="scope-field-label">Allowed folders</p>
+                  <p className="scope-list-count" aria-live="polite">
+                    {driveScopeDraftLinks.length === 0
+                      ? 'Nothing selected yet'
+                      : `${driveScopeDraftLinks.length} folder${driveScopeDraftLinks.length === 1 ? '' : 's'} will be indexed`}
+                  </p>
+                </div>
+                <span className="scope-list-badge">Nested folders included</span>
+              </div>
+
+              {driveScopeDraftLinks.length > 0 ? (
+                <ul className="scope-folder-list" aria-label="Allowed Google Drive folders">
+                  {driveScopeDraftLinks.map((link, index) => (
+                    <li key={link} className="scope-folder-row">
+                      <span className="scope-folder-number" aria-hidden="true">
+                        {String(index + 1).padStart(2, '0')}
+                      </span>
+                      <span className="scope-folder-main">
+                        <strong>
+                          {driveFolderNames[link] ??
+                            (loadingDriveFolderNames
+                              ? 'Loading folder name…'
+                              : 'Folder name unavailable')}
+                        </strong>
+                        <span title={link}>{link}</span>
+                      </span>
+                      <a
+                        className="scope-folder-open"
+                        href={link}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label={`Open Drive folder ${index + 1} in a new tab`}
+                      >
+                        <ExternalLink size={14} />
+                      </a>
+                      <button
+                        className="scope-folder-remove"
+                        onClick={() =>
+                          setDriveScopeDraftLinks((current) =>
+                            current.filter((item) => item !== link),
+                          )
+                        }
+                        disabled={savingDriveScope}
+                        aria-label={`Remove Drive folder ${index + 1}`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="scope-list-empty">
+                  <FolderOpen size={20} />
+                  <div>
+                    <strong>Add your first folder</strong>
+                    <span>Only content inside selected folders will be searchable.</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="scope-modal-note">
+                <ShieldCheck size={15} />
+                <span>Changing this list makes the next sync the source of truth for Drive.</span>
+              </div>
+            </div>
+
+            <div className="scope-modal-footer">
+              <button
+                className="scope-cancel-button"
+                onClick={() => setDriveScopeModalOpen(false)}
+                disabled={savingDriveScope}
+              >
+                Cancel
+              </button>
+              <button
+                className="scope-save-button"
+                onClick={() => void handleSaveDriveScopeModal(googleConnectionId)}
+                disabled={!hasToken || savingDriveScope || driveScopeDraftLinks.length === 0}
+              >
+                {savingDriveScope ? (
+                  <>
+                    <Loader2 size={15} className="animate-spin" /> Saving and syncing…
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={15} /> Save scope and sync
+                  </>
+                )}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       <ImportedContent previews={previews} />
 

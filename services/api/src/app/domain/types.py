@@ -114,6 +114,7 @@ class SourceConnection(BaseModel):
     source: Source
     external_workspace_id: str
     display_name: str | None = None
+    scope_config: dict[str, Any] = Field(default_factory=dict)
     status: SourceConnectionStatus = SourceConnectionStatus.CONNECTED
     last_sync_at: datetime | None = None
     last_reconcile_at: datetime | None = None
@@ -155,6 +156,7 @@ class AuthorisedEvidence(BaseModel):
     canonical_url: str | None = None
     text: str = ""
     fused_score: float = 0.0
+    chunk_ordinal: int | None = None
 
 
 class GeneratedClaim(BaseModel):

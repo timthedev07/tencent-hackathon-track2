@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from uuid import UUID
 
 from app.domain.types import AuthorisedEvidence, CompiledContext
 from app.observability.logging import get_logger
@@ -73,6 +74,43 @@ def _build_evidence_block(evidence: AuthorisedEvidence) -> str:
     )
 
 
+def _order_adjacent_chunks(
+    evidence_list: list[AuthorisedEvidence],
+) -> list[AuthorisedEvidence]:
+    """Keep contiguous chunks together without changing document priority."""
+    chunks_by_document: dict[tuple[UUID, str], list[AuthorisedEvidence]] = {}
+    for evidence in evidence_list:
+        if evidence.chunk_ordinal is None:
+            continue
+        key = (evidence.source_object_id, evidence.source_revision)
+        chunks_by_document.setdefault(key, []).append(evidence)
+
+    contiguous_runs: dict[UUID, list[AuthorisedEvidence]] = {}
+    for chunks in chunks_by_document.values():
+        chunks.sort(key=lambda item: item.chunk_ordinal or 0)
+        run: list[AuthorisedEvidence] = []
+        previous_ordinal: int | None = None
+        for chunk in chunks:
+            if previous_ordinal is not None and chunk.chunk_ordinal != previous_ordinal + 1:
+                for item in run:
+                    contiguous_runs[item.evidence_id] = run
+                run = []
+            run.append(chunk)
+            previous_ordinal = chunk.chunk_ordinal
+        for item in run:
+            contiguous_runs[item.evidence_id] = run
+
+    ordered: list[AuthorisedEvidence] = []
+    emitted: set[UUID] = set()
+    for evidence in evidence_list:
+        if evidence.evidence_id in emitted:
+            continue
+        run = contiguous_runs.get(evidence.evidence_id, [evidence])
+        ordered.extend(item for item in run if item.evidence_id not in emitted)
+        emitted.update(item.evidence_id for item in run)
+    return ordered
+
+
 def compile_context(
     evidence_list: list[AuthorisedEvidence],
     max_tokens: int | None = None,
@@ -86,16 +124,17 @@ def compile_context(
     evidence_blocks: list[AuthorisedEvidence] = []
     used_tokens = 0
 
-    for evidence in evidence_list:
+    ordered_evidence = _order_adjacent_chunks(evidence_list)
+    for evidence in ordered_evidence:
         block = _build_evidence_block(evidence)
         block_tokens = _estimate_tokens(block)
         if used_tokens + block_tokens > remaining_budget:
             logger.info(
-                "Token budget exhausted — truncating evidence",
+                "Evidence skipped because the context budget is exhausted",
                 included=len(evidence_blocks),
-                total=len(evidence_list),
+                total=len(ordered_evidence),
             )
-            break
+            continue
         evidence_blocks.append(evidence)
         used_tokens += block_tokens
 

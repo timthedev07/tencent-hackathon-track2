@@ -139,6 +139,7 @@ async def load_ingestion_context(
             source=source,
             external_workspace_id=connection_row.external_workspace_id,
             display_name=connection_row.display_name,
+            scope_config=connection_row.scope_config or {},
             status=SourceConnectionStatus(str(connection_row.status)),
             last_sync_at=connection_row.last_sync_at,
             last_reconcile_at=connection_row.last_reconcile_at,

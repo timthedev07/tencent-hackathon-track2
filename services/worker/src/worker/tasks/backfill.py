@@ -89,6 +89,7 @@ async def _run_backfill(
                     "source": context.connection.source.value,
                     "externalObjectId": external_id,
                     "sourceRevision": item.get("source_revision"),
+                    "providerMetadata": item.get("provider_metadata", {}),
                 }
                 if user_id:
                     message["userId"] = user_id

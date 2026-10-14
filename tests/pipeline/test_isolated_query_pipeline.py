@@ -10,7 +10,7 @@ compilation, generation verification, citation reauth, and audit hashing.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -68,6 +68,7 @@ class ProviderDocument:
     provider_payload: dict[str, Any]
     acl_payload: dict[str, Any]
     normalised: NormalisedProviderObject
+    chunk_ordinal: int = 0
 
 
 @dataclass
@@ -526,6 +527,38 @@ def _provider_documents(use_updated_confluence: bool = False) -> list[ProviderDo
     return docs
 
 
+def _google_drive_outage_documents() -> list[ProviderDocument]:
+    base = next(
+        doc
+        for doc in _provider_documents()
+        if doc.normalised.external_object_id == "1a2b3c4d5e6f7g8h9i0j"
+    )
+    source_object_id = _id("object:google_drive_outage_postmortem")
+    paragraphs = [
+        "The Q3 payment gateway outage began at 14:03 and lasted 47 minutes.",
+        "Customer impact: 428 failed checkout attempts.",
+        "Payment gateway remediation added failover checks and a follow-up review.",
+    ]
+    return [
+        ProviderDocument(
+            source_object_id=source_object_id,
+            chunk_id=_id(f"chunk:google_drive_outage_postmortem:{ordinal}"),
+            evidence_id=_id(f"evidence:google_drive_outage_postmortem:{ordinal}"),
+            provider_payload=base.provider_payload,
+            acl_payload=base.acl_payload,
+            normalised=replace(
+                base.normalised,
+                external_object_id="google-drive-outage-postmortem",
+                title="Q3 payment gateway outage postmortem",
+                source_revision="drive-rev-outage-2026-q3",
+                text=text,
+            ),
+            chunk_ordinal=ordinal,
+        )
+        for ordinal, text in enumerate(paragraphs)
+    ]
+
+
 def _identity_for(user_id: UUID) -> ProviderIdentity:
     if user_id == ALICE_USER_ID:
         return ProviderIdentity(
@@ -595,6 +628,7 @@ class InMemoryPipelineHarness:
     ) -> None:
         self.docs = docs
         self.by_object_id = {doc.source_object_id: doc for doc in docs}
+        self.by_chunk_id = {doc.chunk_id: doc for doc in docs}
         self.by_evidence_id: dict[UUID, AuthorisedEvidence] = {}
         self.revoked_object_ids = revoked_object_ids or set()
         self.timed_out_sources = timed_out_sources or set()
@@ -813,13 +847,13 @@ class InMemoryPipelineHarness:
         self, candidates: list[Any], authorised_object_ids: set[UUID]
     ) -> list[AuthorisedEvidence]:
         evidence: list[AuthorisedEvidence] = []
-        seen: set[UUID] = set()
+        seen_chunks: set[UUID] = set()
         for candidate in candidates:
             object_id = candidate.source_object_id
-            if object_id not in authorised_object_ids or object_id in seen:
+            if object_id not in authorised_object_ids or candidate.chunk_id in seen_chunks:
                 continue
-            seen.add(object_id)
-            doc = self.by_object_id[object_id]
+            seen_chunks.add(candidate.chunk_id)
+            doc = self.by_chunk_id[candidate.chunk_id]
             ev = AuthorisedEvidence(
                 evidence_id=doc.evidence_id,
                 chunk_id=doc.chunk_id,
@@ -830,6 +864,7 @@ class InMemoryPipelineHarness:
                 canonical_url=doc.normalised.canonical_url,
                 text=doc.normalised.text,
                 fused_score=candidate.fused_score,
+                chunk_ordinal=doc.chunk_ordinal,
             )
             evidence.append(ev)
             self.by_evidence_id[ev.evidence_id] = ev
@@ -966,6 +1001,29 @@ def test_authorised_cross_source_pipeline_generates_verified_answer_after_audit(
     assert {ev.source for ev in result.evidence} >= {Source.CONFLUENCE, Source.JIRA}
     assert verify_answer(result.answer, result.evidence).valid
     assert all(outcome == AccessOutcome.ALLOW for outcome in result.trace.live_access_results.values())
+
+
+def test_google_drive_outage_answer_preserves_and_cites_impact_chunk() -> None:
+    documents = _google_drive_outage_documents()
+    query = "How many checkout attempts failed during the Q3 payment gateway outage?"
+
+    result = InMemoryPipelineHarness(documents).run(query, ALICE_USER_ID)
+
+    assert result.status == "completed"
+    assert result.answer is not None
+    assert "428" in result.answer.answer
+    assert {item.chunk_ordinal for item in result.trace.authorised_evidence} == {0, 1, 2}
+    assert [item.chunk_ordinal for item in result.evidence] == [0, 1, 2]
+    impact = next(item for item in result.evidence if "428 failed checkout attempts" in item.text)
+    impact_claim = next(claim for claim in result.answer.claims if "428" in claim.text)
+    assert impact_claim.evidence_ids == [impact.evidence_id]
+    assert impact.source == Source.GOOGLE_DRIVE
+    assert impact.source_object_id == _id("object:google_drive_outage_postmortem")
+
+    denied = InMemoryPipelineHarness(documents).run(query, DAVE_USER_ID)
+    assert denied.status == "denied"
+    assert denied.evidence == []
+    assert denied.answer is None
 
 
 def test_restricted_provider_text_never_reaches_reranker_context_or_answer() -> None:

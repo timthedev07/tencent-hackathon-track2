@@ -154,6 +154,7 @@ async def _load_authorised_text(
         select(
             Chunk.id,
             Chunk.text,
+            Chunk.ordinal,
             Chunk.object_version_id,
             ObjectVersion.source_revision,
             ObjectVersion.normalised_title,
@@ -165,42 +166,57 @@ async def _load_authorised_text(
         .join(SourceObject, ObjectVersion.source_object_id == SourceObject.id)
         .where(Chunk.id.in_(chunk_ids))
     )
-    rows = (await session.execute(stmt)).all()
+    rows = list((await session.execute(stmt)).all())
 
+    candidate_order = {
+        candidate.chunk_id: index for index, candidate in enumerate(authorised_candidates)
+    }
+    candidate_scores = {
+        candidate.chunk_id: candidate.fused_score for candidate in authorised_candidates
+    }
+    rows.sort(key=lambda row: candidate_order.get(row[0], len(candidate_order)))
     evidence_list: list[AuthorisedEvidence] = []
     for row in rows:
-        fused_score = next(
-            (c.fused_score for c in authorised_candidates if c.chunk_id == row[0]), 0.0
-        )
         evidence_list.append(
             AuthorisedEvidence(
                 evidence_id=uuid4(),
                 chunk_id=row[0],
                 text=row[1],
-                source_object_id=row[5],
-                source=Source(row[6]),
-                source_revision=row[3] or "",
-                title=row[4],
-                canonical_url=row[7],
-                fused_score=fused_score,
+                chunk_ordinal=row[2],
+                source_object_id=row[6],
+                source=Source(row[7]),
+                source_revision=row[4] or "",
+                title=row[5],
+                canonical_url=row[8],
+                fused_score=candidate_scores.get(row[0], 0.0),
             )
         )
 
-    by_object: dict[UUID, list[AuthorisedEvidence]] = {}
-    for ev in evidence_list:
-        by_object.setdefault(ev.source_object_id, []).append(ev)
-    deduped: list[AuthorisedEvidence] = []
-    for evs in by_object.values():
-        if len(evs) > 1:
-            evs.sort(key=lambda e: e.source_revision, reverse=True)
-            deduped.append(evs[0])
-        else:
-            deduped.extend(evs)
-
     logger.info(
-        "Authorised text loaded", candidate_count=len(candidates), evidence_count=len(deduped)
+        "Authorised text loaded", candidate_count=len(candidates), evidence_count=len(evidence_list)
     )
-    return deduped
+    return evidence_list
+
+
+def _reranked_for_compiled_context(
+    reranked: list[RerankedEvidence],
+    compiled_evidence: list[AuthorisedEvidence],
+) -> list[RerankedEvidence]:
+    """Return citation metadata for prompt evidence, in prompt order only."""
+    by_evidence_id = {item.evidence.evidence_id: item for item in reranked}
+    included: list[RerankedEvidence] = []
+    for rank, evidence in enumerate(compiled_evidence):
+        item = by_evidence_id.get(evidence.evidence_id)
+        if item is None:
+            continue
+        included.append(
+            RerankedEvidence(
+                evidence=evidence,
+                rerank_score=item.rerank_score,
+                rank=rank,
+            )
+        )
+    return included
 
 
 async def _audit_commit(
@@ -533,6 +549,8 @@ async def run_query_pipeline(  # noqa: PLR0911
 
         context_evidence = [r.evidence for r in reranked]
         compiled_context = compile_context(context_evidence, query_text=query_text)
+        context_evidence = compiled_context.evidence_blocks
+        compiled_reranked = _reranked_for_compiled_context(reranked, context_evidence)
 
         async with factory() as session:
             await set_tenant_context(session, user.tenant_id)
@@ -589,7 +607,7 @@ async def run_query_pipeline(  # noqa: PLR0911
                 query_id=query_id,
                 tenant_id=user.tenant_id,
                 answer=final_answer,
-                reranked=reranked,
+                reranked=compiled_reranked,
                 access_decisions=all_access_results,
                 object_source_map=all_object_source_map,
                 status=final_status,
