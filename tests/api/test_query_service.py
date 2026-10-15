@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -22,8 +22,8 @@ class _Session:
     async def flush(self) -> None:
         for value in self.added:
             if isinstance(value, QueryRun):
-                value.id = uuid4()
-                value.status = "created"
+                cast(Any, value).id = uuid4()
+                cast(Any, value).status = "created"
 
     async def commit(self) -> None:
         self.commits += 1
@@ -47,9 +47,13 @@ async def test_create_query_run_does_not_refresh_after_commit(
     tenant_id = uuid4()
     user_id = uuid4()
 
-    monkeypatch.setattr(query_service, "get_credential_manager", lambda: SimpleNamespace(
-        encrypt_bytes=lambda value: EncryptedPayload(ciphertext=b"encrypted-query")
-    ))
+    def encrypt_bytes(_value: bytes) -> EncryptedPayload:
+        return EncryptedPayload(ciphertext=b"encrypted-query")
+
+    def credential_manager() -> SimpleNamespace:
+        return SimpleNamespace(encrypt_bytes=encrypt_bytes)
+
+    monkeypatch.setattr(query_service, "get_credential_manager", credential_manager)
     monkeypatch.setattr(
         query_service,
         "get_session_factory",
