@@ -23,6 +23,8 @@ from celery import Celery
 from celery.signals import task_failure, task_postrun, task_prerun
 from kombu import Queue
 
+from worker.reconciliation_schedule import ReconciliationSchedule
+
 settings = get_settings()
 configure_logging(service_name="enterprise-assistant-worker")
 logger = get_logger(__name__)
@@ -114,7 +116,11 @@ celery_app.conf.update(
     beat_schedule={
         "provider-reconciliation": {
             "task": "worker.tasks.reconcile.run_reconciliation",
-            "schedule": timedelta(minutes=settings.RECONCILIATION_INTERVAL_MINUTES),
+            "schedule": ReconciliationSchedule(
+                run_every=timedelta(minutes=settings.RECONCILIATION_INTERVAL_MINUTES),
+                change_at=settings.RECONCILIATION_INTERVAL_CHANGE_AT,
+                after_interval=timedelta(minutes=settings.RECONCILIATION_AFTER_INTERVAL_MINUTES),
+            ),
             "options": {"queue": "reconciliation"},
         }
     },

@@ -434,6 +434,16 @@ For every run, save the application user, exact query, query ID, provider object
 9. **Partial source** — in a disposable test run, make one provider unavailable. The UI must label the result partial and identify the unavailable source without claiming it was searched successfully.
 10. **Tamper detection** — use a disposable local/test database only. Never edit or delete audit rows in the shared demo database. Expect chain verification to fail after the test mutation.
 
+### 9.1 Presentation without live provider permission changes
+
+Use [`deliverables/relay_5_minute_demo_script.md`](deliverables/relay_5_minute_demo_script.md) for the broadest practical presentation using the populated corpus and existing grants. It covers both Jira issues, all three Confluence pages, the three Slack channel/thread groups and both Drive documents. The four integrations are not four individual evidence items.
+
+For this presentation, Bob is already outside `#revocation-test`. Compare Alice’s permitted retrieval with Bob’s denied retrieval, without inviting or removing anyone during the walkthrough. Describe this as current access denial, not as a newly demonstrated revocation transition. The full allow/remove/deny procedure in Section 6.7 remains a separate test.
+
+Include the payment investigation, auth decision and unresolved trade-off, restricted Drive comparison, private Slack comparison, prompt-injection check where the planted line actually enters context, and Carol’s audit and compliance role. Freshness can use the content-only revision edit in Section 6.8. Retain the real before/after answers and identify manual synchronisation explicitly. Prepared results must be labelled as prepared.
+
+Provider outage simulation and audit tampering belong in separate disposable tests. Do not claim those failure cases passed from an ordinary successful query or an intact audit chain.
+
 ## 10. Freshness, scale and limitations
 
 `make worker` runs the worker with an embedded Celery Beat scheduler. Beat publishes the configured provider-reconciliation task every `RECONCILIATION_INTERVAL_MINUTES` (15 minutes by default); the worker then performs connector change detection and queues ingestion work. The Compose stack also provides a dedicated `beat` service for deployments that manage the worker and scheduler separately. A manual backfill remains useful for deterministic setup, but it must be labelled separately from scheduled reconciliation.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import AwareDatetime, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -79,7 +79,9 @@ class Settings(BaseSettings):
     # ── Query deadlines / intervals ────────────────────────────────
     QUERY_AUTH_DEADLINE_MS: int = 8000
     QUERY_GENERATION_DEADLINE_MS: int = 30000
-    RECONCILIATION_INTERVAL_MINUTES: int = 15
+    RECONCILIATION_INTERVAL_MINUTES: int = Field(default=15, gt=0)
+    RECONCILIATION_INTERVAL_CHANGE_AT: AwareDatetime | None = None
+    RECONCILIATION_AFTER_INTERVAL_MINUTES: int = Field(default=15, gt=0)
 
     # ── Encryption ──────────────────────────────────────────────────
     ENCRYPTION_MASTER_KEY: str = Field(
