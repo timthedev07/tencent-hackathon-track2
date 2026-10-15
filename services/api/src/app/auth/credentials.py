@@ -31,8 +31,9 @@ logger = get_logger(__name__)
 
 # Key version tracking for rotation
 CURRENT_KEY_VERSION = "v1"
-_EXPECTED_PAYLOAD_PARTS = 3  # wrapped_dek || nonce || ciphertext
 _KEY_SIZE_BYTES = 32
+_GCM_NONCE_SIZE_BYTES = 12
+_PAYLOAD_SEPARATOR = b"||"
 
 
 class EncryptedPayload(BaseModel):
@@ -40,6 +41,23 @@ class EncryptedPayload(BaseModel):
 
     ciphertext: bytes
     key_version: str = CURRENT_KEY_VERSION
+
+
+def _split_payload(payload: bytes) -> tuple[bytes, bytes, bytes]:
+    """Split an envelope payload without treating encrypted bytes as delimiters."""
+    wrapped_dek, separator, remainder = payload.partition(_PAYLOAD_SEPARATOR)
+    separator_size = len(_PAYLOAD_SEPARATOR)
+    if (
+        not separator
+        or len(remainder) <= _GCM_NONCE_SIZE_BYTES + separator_size
+        or remainder[_GCM_NONCE_SIZE_BYTES : _GCM_NONCE_SIZE_BYTES + separator_size]
+        != _PAYLOAD_SEPARATOR
+    ):
+        raise ValueError("Invalid encrypted payload format")
+
+    nonce = remainder[:_GCM_NONCE_SIZE_BYTES]
+    ciphertext = remainder[_GCM_NONCE_SIZE_BYTES + separator_size :]
+    return wrapped_dek, nonce, ciphertext
 
 
 class CredentialManager:
@@ -95,7 +113,7 @@ class CredentialManager:
         wrapped_dek = fernet.encrypt(dek)
 
         # Combine: wrapped_dek + nonce + ciphertext
-        combined = wrapped_dek + b"||" + nonce + b"||" + ciphertext
+        combined = wrapped_dek + _PAYLOAD_SEPARATOR + nonce + _PAYLOAD_SEPARATOR + ciphertext
 
         return EncryptedPayload(
             ciphertext=combined,
@@ -106,12 +124,7 @@ class CredentialManager:
         """Decrypt a credential — returns plaintext to be discarded after use."""
         fernet = self._get_fernet()
 
-        # Split the combined payload
-        parts = payload.ciphertext.split(b"||")
-        if len(parts) != _EXPECTED_PAYLOAD_PARTS:
-            raise ValueError("Invalid encrypted payload format")
-
-        wrapped_dek, nonce, ciphertext = parts
+        wrapped_dek, nonce, ciphertext = _split_payload(payload.ciphertext)
 
         # Unwrap the DEK
         dek = fernet.decrypt(wrapped_dek)
@@ -135,7 +148,7 @@ class CredentialManager:
         fernet = self._get_fernet()
         wrapped_dek = fernet.encrypt(dek)
 
-        combined = wrapped_dek + b"||" + nonce + b"||" + ciphertext
+        combined = wrapped_dek + _PAYLOAD_SEPARATOR + nonce + _PAYLOAD_SEPARATOR + ciphertext
 
         return EncryptedPayload(
             ciphertext=combined,
@@ -144,11 +157,7 @@ class CredentialManager:
 
     def decrypt_bytes(self, payload: EncryptedPayload) -> bytes:
         """Decrypt raw bytes."""
-        parts = payload.ciphertext.split(b"||")
-        if len(parts) != _EXPECTED_PAYLOAD_PARTS:
-            raise ValueError("Invalid encrypted payload format")
-
-        wrapped_dek, nonce, ciphertext = parts
+        wrapped_dek, nonce, ciphertext = _split_payload(payload.ciphertext)
         fernet = self._get_fernet()
         dek = fernet.decrypt(wrapped_dek)
 
