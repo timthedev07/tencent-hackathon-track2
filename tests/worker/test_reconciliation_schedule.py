@@ -54,4 +54,4 @@ def test_beat_persistence_retains_the_interval_change() -> None:
 
 def test_settings_reject_a_cut_off_without_a_timezone() -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, RECONCILIATION_INTERVAL_CHANGE_AT="2026-10-15T23:30:00")
+        Settings.model_validate({"RECONCILIATION_INTERVAL_CHANGE_AT": "2026-10-15T23:30:00"})

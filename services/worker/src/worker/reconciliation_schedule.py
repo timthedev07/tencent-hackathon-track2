@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from typing import cast
 
 from celery import Celery
 from celery.schedules import schedstate, schedule
@@ -34,13 +35,11 @@ class ReconciliationSchedule(schedule):
         after_change = self.change_at is not None and now >= self.change_at
         interval = self.after_interval if after_change else self.run_every
         active = schedule(run_every=interval, nowfun=lambda: now, app=self.app)
-        state = active.is_due(last_run_at)
+        # Celery incorrectly annotates the numeric delay as a datetime.
+        is_due, next_check = cast(tuple[bool, float], active.is_due(last_run_at))
         if self.change_at is not None and not after_change:
-            return schedstate(
-                state.is_due,
-                min(state.next, (self.change_at - now).total_seconds()),
-            )
-        return state
+            next_check = min(next_check, (self.change_at - now).total_seconds())
+        return schedstate(is_due, next_check)
 
     def __reduce__(self) -> tuple:
         """Preserve the cut-off when Beat persists its schedule."""
