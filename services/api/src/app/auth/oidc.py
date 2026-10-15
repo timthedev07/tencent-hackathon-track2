@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 _jwks_cache: dict[str, Any] = {}
 _jwks_last_fetch: float = 0.0
 _JWKS_TTL_SECONDS = 300  # 5 minutes
-_DEV_COMPLIANCE_SUBJECT = "compliance"
+_DEV_COMPLIANCE_SUBJECT = "carol"
 
 
 def _is_dev_compliance_subject(subject: str) -> bool:
@@ -245,7 +245,7 @@ async def resolve_user(session: AsyncSession, claims: dict[str, Any]) -> Authent
         expected_compliance_role = _is_dev_compliance_subject(oidc_subject)
         if user.is_compliance_user != expected_compliance_role:
             # Correct users created by the previous development default while
-            # preserving the explicit ``dev-compliance`` demo role.
+            # preserving Carol as the explicit demo compliance role.
             user.is_compliance_user = expected_compliance_role
             await session.commit()
     return AuthenticatedUser(

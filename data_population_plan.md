@@ -74,7 +74,7 @@ Use a separate browser profile for each application user and provider identity. 
 
 4. Confirm that the API, web application, PostgreSQL, Redis and worker are healthy before creating source data.
 5. Create `alice`, `bob` and `carol` in Keycloak, or use the repository’s configured enterprise identity provider. Sign in once as each user so the application creates their local user records.
-6. In local development, new users are auto-provisioned with `is_compliance_user = true`. Correct this immediately after all three users exist:
+6. In local development, new users are auto-provisioned with Carol as the compliance user. Verify the role assignment immediately after all three users exist:
 
    ```bash
    docker compose exec -T postgres psql -U assistant -d assistant \

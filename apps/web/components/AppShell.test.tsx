@@ -84,7 +84,7 @@ test('renders the public homepage immediately for a guest', async () => {
 
 test('keeps compliance highlighted on an audit-detail subroute', async () => {
   navigation.pathname = '/compliance/query-123';
-  window.localStorage.setItem('auth_token', 'dev-compliance');
+  window.localStorage.setItem('auth_token', 'dev-carol');
   api.getSession.mockResolvedValue({ isComplianceUser: true });
 
   await act(async () => {

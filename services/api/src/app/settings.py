@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     KMS_KEY_ID: str = "dev-local-key"
 
     # ── Query deadlines / intervals ────────────────────────────────
-    QUERY_AUTH_DEADLINE_MS: int = 1500
+    QUERY_AUTH_DEADLINE_MS: int = 8000
     QUERY_GENERATION_DEADLINE_MS: int = 30000
     RECONCILIATION_INTERVAL_MINUTES: int = 15
 

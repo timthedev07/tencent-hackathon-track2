@@ -612,13 +612,14 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 ## 12. Query Deadlines / Intervals
 
 ```env
-QUERY_AUTH_DEADLINE_MS=1500
+QUERY_AUTH_DEADLINE_MS=8000
 QUERY_GENERATION_DEADLINE_MS=6000
 RECONCILIATION_INTERVAL_MINUTES=15
 ```
 
 These are tuning parameters, not credentials:
-- `QUERY_AUTH_DEADLINE_MS` — total budget for live provider access checks (ms).
+- `QUERY_AUTH_DEADLINE_MS` — total budget for live provider access checks (ms). The
+  Render demo uses 8000 ms to accommodate live checks across all connected providers.
 - `QUERY_GENERATION_DEADLINE_MS` — timeout for the model generation call (ms).
 - `RECONCILIATION_INTERVAL_MINUTES` — how often the background reconciliation worker runs.
 
