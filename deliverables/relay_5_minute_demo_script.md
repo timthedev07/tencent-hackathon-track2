@@ -14,7 +14,7 @@
 
 ## Slide 3 — Ingestion and the knowledge index (0:40–1:10)
 
-“Relay uses retrieval-augmented generation, or RAG, to answer from source evidence. Delegated OAuth connects provider identities. Celery workers fetch and normalise content, resolve access-control metadata and split text into chunks. Embeddings support semantic search, alongside PostgreSQL full-text indexes in the pgvector-backed database.
+“Relay uses retrieval-augmented generation, or RAG, to answer from source evidence. When a user connects Atlassian, Slack or Google Drive, Relay records the exact provider account that granted access and stores that account’s OAuth credential encrypted. Celery workers fetch and normalise content, resolve access-control metadata and split text into chunks. Embeddings support semantic search, alongside PostgreSQL full-text indexes in the pgvector-backed database.
 
 Reconciliation discovers updates. A revision becomes active only when indexing is ready, and immutable versions preserve provenance. Indexed permissions help narrow candidates. Live checks still decide query-time access.”
 
@@ -22,7 +22,7 @@ Reconciliation discovers updates. A revision becomes active only when indexing i
 
 “At query time, vector similarity finds related meaning and full-text search finds matching terms. Reciprocal-rank fusion combines their candidate rankings, carrying IDs and scores before text loading.
 
-Relay resolves the user and tenant, then checks access with delegated provider credentials. Uncertain access means deny. Only allowed text reaches reranking and a token-budgeted context labelled with evidence IDs. Retrieved text is untrusted data, and the model returns an answer with claim evidence references.
+Relay resolves the user and tenant, then checks each candidate through the source provider’s API using the OAuth credential connected for that provider. Uncertain access means deny. Only allowed text reaches reranking and a token-budgeted context labelled with evidence IDs. Retrieved text is untrusted data, and the model returns an answer with claim evidence references.
 
 Verification checks those references against authorised evidence. On failure, Relay retries once, then uses an extractive fallback. This validates references, rather than proving factual truth. The audit must commit before release. SHA-256 chaining makes changes detectable, and opening a citation checks access again.”
 
