@@ -9,7 +9,7 @@ single access control model governs. An engineer answering an incident at 3 AM m
 cross-reference a Jira ticket, three Slack threads, a Confluence runbook, and a Google Drive
 postmortem — each living in a different system with different permissions, different formats,
 and different freshness.
-This challenge asks you to build the connective tissue: an Internal Brain — an AI-augmented
+We are building the connective tissue: an Internal Brain — an AI-augmented
 system that unifies context across these four platforms, answers natural-language questions
 grounded in that unified context, and does so under the uncompromising constraint that every
 piece of information it exposes respects the original platform’s access controls, with full
