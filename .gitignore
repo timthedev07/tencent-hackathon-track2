@@ -47,3 +47,14 @@ docker-compose.override.yml
 # Generated
 packages/contracts/generated/
 apps/web/lib/api/generated.ts
+
+# Untracked deliverables
+deliverables/49b6074b-80a9-4848-a8e7-fdd3c0da61b9.mov
+deliverables/relay_5_minute_demo_deck_full_corpus/幻灯片1.png
+deliverables/relay_5_minute_demo_deck_full_corpus/幻灯片2.png
+deliverables/relay_5_minute_demo_deck_full_corpus/幻灯片3.png
+deliverables/relay_5_minute_demo_deck_full_corpus/幻灯片4.png
+deliverables/relay_5_minute_demo_deck_full_corpus/幻灯片5.png
+deliverables/relay_5_minute_demo_deck_full_corpus/幻灯片6.png
+deliverables/relay_5_minute_demo_deck_full_corpus/幻灯片7.png
+deliverables/relay_5_minute_demo_deck_full_corpus/幻灯片8.png
