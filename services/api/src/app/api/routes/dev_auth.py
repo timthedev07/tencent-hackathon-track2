@@ -1,4 +1,4 @@
-"""Dev-only authentication endpoint.
+"""Authentication session endpoints.
 
 POST /v1/auth/dev-login
   Body: { "subject": "alice" }
@@ -6,13 +6,18 @@ POST /v1/auth/dev-login
 
 This endpoint is ONLY available when APP_ENV=development.
 In production, it returns 404.
+
+GET /v1/auth/session
+  Returns the authenticated user's display details and compliance role.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from app.api.dependencies.auth import get_authenticated_user
+from app.auth.oidc import AuthenticatedUser
 from app.settings import get_settings
 
 router = APIRouter()
@@ -27,6 +32,13 @@ class DevLoginResponse(BaseModel):
     subject: str
 
 
+class SessionResponse(BaseModel):
+    """Safe user details required to render the application shell."""
+
+    displayName: str | None = None
+    isComplianceUser: bool
+
+
 @router.post("/dev-login", response_model=DevLoginResponse)
 async def dev_login(body: DevLoginRequest) -> DevLoginResponse:
     """Issue a dev-mode token. Only available in development."""
@@ -39,3 +51,12 @@ async def dev_login(body: DevLoginRequest) -> DevLoginResponse:
 
     subject = body.subject.strip() or "alice"
     return DevLoginResponse(token=f"dev-{subject}", subject=subject)
+
+
+@router.get("/session", response_model=SessionResponse)
+async def get_session(user: AuthenticatedUser = Depends(get_authenticated_user)) -> SessionResponse:
+    """Return the current user's UI-safe session metadata."""
+    return SessionResponse(
+        displayName=user.display_name,
+        isComplianceUser=user.is_compliance_user,
+    )

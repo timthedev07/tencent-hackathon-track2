@@ -15,7 +15,7 @@ import {
   UserRound,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { clearAuthToken, getAuthToken, getAuditHistory } from '@/lib/api/client';
+import { clearAuthToken, getAuthToken, getSession } from '@/lib/api/client';
 import { GlassPanel } from './GlassPanel';
 import { ThemeToggle } from './ThemeToggle';
 
@@ -56,8 +56,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             : 'Guest',
       );
       if (signedIn) {
-        getAuditHistory(1)
-          .then(() => setComplianceStatus('allowed'))
+        getSession()
+          .then((session) => setComplianceStatus(session.isComplianceUser ? 'allowed' : 'denied'))
           .catch(() => setComplianceStatus('denied'));
       } else {
         setComplianceStatus('denied');

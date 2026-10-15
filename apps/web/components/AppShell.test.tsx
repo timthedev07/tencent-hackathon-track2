@@ -12,7 +12,7 @@ const navigation = vi.hoisted(() => ({
   push: vi.fn(),
 }));
 const api = vi.hoisted(() => ({
-  getAuditHistory: vi.fn(),
+  getSession: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -28,7 +28,7 @@ vi.mock('next/link', () => ({
 
 vi.mock('@/lib/api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api/client')>()),
-  getAuditHistory: api.getAuditHistory,
+  getSession: api.getSession,
 }));
 
 import { AppShell } from './AppShell';
@@ -41,7 +41,7 @@ beforeEach(() => {
   navigation.pathname = '/query';
   navigation.replace.mockReset();
   navigation.push.mockReset();
-  api.getAuditHistory.mockResolvedValue({});
+  api.getSession.mockResolvedValue({ isComplianceUser: false });
   window.localStorage.clear();
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -85,6 +85,7 @@ test('renders the public homepage immediately for a guest', async () => {
 test('keeps compliance highlighted on an audit-detail subroute', async () => {
   navigation.pathname = '/compliance/query-123';
   window.localStorage.setItem('auth_token', 'dev-compliance');
+  api.getSession.mockResolvedValue({ isComplianceUser: true });
 
   await act(async () => {
     root.render(

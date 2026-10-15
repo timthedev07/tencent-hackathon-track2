@@ -78,6 +78,7 @@ export interface AuditHistoryResponse {
   auditChainVerified: boolean;
 }
 export interface OAuthStartResponse { authoriseUrl: string }
+export interface SessionResponse { displayName: string | null; isComplianceUser: boolean }
 
 export async function createQuery(query: string): Promise<CreateQueryResponse> {
   return apiFetch<CreateQueryResponse>('/queries', { method: 'POST', body: JSON.stringify({ query }) });
@@ -93,6 +94,9 @@ export async function getAuditCapsule(queryId: string): Promise<AuditResponse> {
 }
 export async function getAuditHistory(limit = 50, offset = 0): Promise<AuditHistoryResponse> {
   return apiFetch<AuditHistoryResponse>(`/audit/queries?limit=${limit}&offset=${offset}`);
+}
+export async function getSession(): Promise<SessionResponse> {
+  return apiFetch<SessionResponse>('/auth/session');
 }
 export async function startOAuth(provider: 'atlassian' | 'slack' | 'google'): Promise<OAuthStartResponse> {
   return apiFetch<OAuthStartResponse>(`/oauth/${provider}/start`);

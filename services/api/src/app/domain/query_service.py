@@ -101,7 +101,6 @@ async def create_query_run(
             force=True,
         )
         await session.commit()
-        await session.refresh(run)
         return {"id": UUID(str(run.id)), "status": run.status}
 
 
