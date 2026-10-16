@@ -433,10 +433,22 @@ def _cloud_id(
     return str(credential.provider_metadata.get("cloud_id") or connection.external_workspace_id)
 
 
+_ATLASSIAN_API_BASE = "https://api.atlassian.com"
+
+
 def _page_url(cloud_id: str, cursor: str | None) -> str:
+    base = f"{_ATLASSIAN_API_BASE}/ex/confluence/{cloud_id}/wiki/api/v2/pages"
     if cursor and cursor.startswith("http"):
+        # Validate provider-supplied cursor URL is within the Atlassian API
+        # origin to prevent SSRF via tampered _links.next values.
+        from urllib.parse import urlparse
+
+        parsed = urlparse(cursor)
+        if parsed.scheme != "https" or parsed.netloc != "api.atlassian.com":
+            logger.warning("Rejecting cursor URL outside Atlassian API origin", cursor=cursor)
+            return base
         return cursor
-    return f"https://api.atlassian.com/ex/confluence/{cloud_id}/wiki/api/v2/pages"
+    return base
 
 
 def _scan_object(item: dict[str, object]) -> dict[str, object]:

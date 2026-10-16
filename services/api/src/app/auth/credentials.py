@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import os
 import secrets
+import struct
 
 from cryptography.fernet import Fernet
 from pydantic import BaseModel
@@ -31,6 +32,53 @@ logger = get_logger(__name__)
 # Key version tracking for rotation
 CURRENT_KEY_VERSION = "v1"
 _EXPECTED_PAYLOAD_PARTS = 3  # wrapped_dek || nonce || ciphertext
+
+# Length-prefix format: 4-byte big-endian length + data, repeated for each part.
+# This replaces the old b"||" delimiter which could collide with raw ciphertext
+# bytes and cause intermittent decryption failures (500 errors).
+_LENGTH_PREFIX = struct.Struct(">I")
+
+
+def _pack_parts(*parts: bytes) -> bytes:
+    """Combine multiple byte segments using length-prefixed encoding."""
+    chunks: list[bytes] = []
+    for part in parts:
+        chunks.append(_LENGTH_PREFIX.pack(len(part)))
+        chunks.append(part)
+    return b"".join(chunks)
+
+
+def _unpack_parts(data: bytes) -> tuple[bytes, ...]:
+    """Split length-prefixed payload into its parts.
+
+    Falls back to the legacy b"||" delimiter for rows encrypted before
+    the format change, so existing data in the DB stays readable.
+    """
+    # Try length-prefixed format first.
+    result: list[bytes] = []
+    offset = 0
+    try:
+        for _ in range(_EXPECTED_PAYLOAD_PARTS):
+            if offset + 4 > len(data):
+                raise ValueError("truncated length prefix")
+            (size,) = _LENGTH_PREFIX.unpack_from(data, offset)
+            offset += 4
+            if offset + size > len(data):
+                raise ValueError("truncated part data")
+            result.append(data[offset : offset + size])
+            offset += size
+        if offset != len(data):
+            # Trailing bytes — not a clean length-prefixed payload.
+            raise ValueError("trailing bytes")
+        return tuple(result)
+    except ValueError:
+        pass
+
+    # Legacy fallback: b"||"-delimited format.
+    parts = data.split(b"||")
+    if len(parts) != _EXPECTED_PAYLOAD_PARTS:
+        raise ValueError("Invalid encrypted payload format")
+    return tuple(parts)
 
 
 class EncryptedPayload(BaseModel):
@@ -87,8 +135,9 @@ class CredentialManager:
         fernet = self._get_fernet()
         wrapped_dek = fernet.encrypt(dek)
 
-        # Combine: wrapped_dek + nonce + ciphertext
-        combined = wrapped_dek + b"||" + nonce + b"||" + ciphertext
+        # Combine: wrapped_dek + nonce + ciphertext using length-prefixed
+        # encoding to avoid delimiter collision with raw bytes.
+        combined = _pack_parts(wrapped_dek, nonce, ciphertext)
 
         return EncryptedPayload(
             ciphertext=combined,
@@ -100,11 +149,7 @@ class CredentialManager:
         fernet = self._get_fernet()
 
         # Split the combined payload
-        parts = payload.ciphertext.split(b"||")
-        if len(parts) != _EXPECTED_PAYLOAD_PARTS:
-            raise ValueError("Invalid encrypted payload format")
-
-        wrapped_dek, nonce, ciphertext = parts
+        wrapped_dek, nonce, ciphertext = _unpack_parts(payload.ciphertext)
 
         # Unwrap the DEK
         dek = fernet.decrypt(wrapped_dek)
@@ -128,7 +173,7 @@ class CredentialManager:
         fernet = self._get_fernet()
         wrapped_dek = fernet.encrypt(dek)
 
-        combined = wrapped_dek + b"||" + nonce + b"||" + ciphertext
+        combined = _pack_parts(wrapped_dek, nonce, ciphertext)
 
         return EncryptedPayload(
             ciphertext=combined,
@@ -137,11 +182,7 @@ class CredentialManager:
 
     def decrypt_bytes(self, payload: EncryptedPayload) -> bytes:
         """Decrypt raw bytes."""
-        parts = payload.ciphertext.split(b"||")
-        if len(parts) != _EXPECTED_PAYLOAD_PARTS:
-            raise ValueError("Invalid encrypted payload format")
-
-        wrapped_dek, nonce, ciphertext = parts
+        wrapped_dek, nonce, ciphertext = _unpack_parts(payload.ciphertext)
         fernet = self._get_fernet()
         dek = fernet.decrypt(wrapped_dek)
 
